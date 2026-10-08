@@ -60,16 +60,16 @@
 | order_dt   | DATE          | Дата заказа             |
 | seller_id  | INT           | ID продавца (FK)        |
 | product_id | INT           | ID товара (FK)          |
-| buyer_id   | INT           | ID покупателя (FK)      |
+| user_id    | INT           | ID покупателя (FK)      |
 | quantity   | INT           | Количество              |
 | revenue    | NUMERIC(12,2) | Выручка                 |
 | region     | VARCHAR(50)   | Регион доставки         |
 
-> **О данных:** Набор данных синтетический и создан исключительно для демонстрации возможностей PostgreSQL. Все `seller_id`, `buyer_id`, названия и временные метки сгенерированы. Проект не использует реальные логи, персональные данные или коммерческую информацию.
+> **О данных:** Набор данных синтетический и создан исключительно для демонстрации возможностей PostgreSQL. Все `seller_id`, `user_id`, названия и временные метки сгенерированы. Проект не использует реальные логи, персональные данные или коммерческую информацию.
 
-> **О датах:** В `INSERT` используются относительные даты (`CURRENT_DATE - INTERVAL 'N days'`), чтобы проект оставался актуальным при любом запуске. В реальных проектах даты обычно фиксируют для воспроизводимости.
+> **О датах:** даты в датасете фиксированы (`2026-10-02` … `2026-10-08`), чтобы результаты запросов были воспроизводимы: рекрутер запустит код и увидит ровно те же цифры, что в README. В реальных проектах отчётности даты обычно берутся из источника данных или генерируются относительно текущей даты.
 
-Особенности схемы: `PRIMARY KEY` на `order_id` гарантирует уникальность заказов; `REFERENCES` обеспечивают ссылочную целостность между фактом и измерениями; `NUMERIC(12,2)` и `NUMERIC(10,2)` используются для денежных значений, чтобы избежать ошибок округления `FLOAT`; индексы на `order_dt`, `seller_id`, `region`, `buyer_id` ускоряют аналитические запросы с фильтрацией и `JOIN`; `city_id` в `sellers` и `users` позволяет анализировать географию продавцов и покупателей независимо от региона доставки; категория товара вынесена только в `products`, так как один продавец может работать в нескольких категориях.
+Особенности схемы: `PRIMARY KEY` на `order_id` гарантирует уникальность заказов; `REFERENCES` обеспечивают ссылочную целостность между фактом и измерениями; `NUMERIC(12,2)` и `NUMERIC(10,2)` используются для денежных значений, чтобы избежать ошибок округления `FLOAT`; индексы на `order_dt`, `seller_id`, `region`, `user_id` ускоряют аналитические запросы с фильтрацией и `JOIN`; `city_id` в `sellers` и `users` позволяет анализировать географию продавцов и покупателей независимо от региона доставки; категория товара вынесена только в `products`, так как один продавец может работать в нескольких категориях.
 
 **Важно про группировки:** во всех аналитических запросах группировка идёт по **ID** (`seller_id`, `user_id`, `product_id`, `city_id`), а не по именам. Имена — это описательные атрибуты, они могут повторяться, и группировка по ним даёт неверный результат.
 
@@ -77,15 +77,15 @@
 
 Несколько строк из таблицы `orders` для наглядности:
 
-| order_id | order_dt   | seller_id | product_id | buyer_id | quantity | revenue | region  |
-|----------|------------|-----------|------------|----------|----------|---------|---------|
-| 1001     | 2026-10-04 | 1         | 101        | 501      | 1        | 45000   | Москва  |
-| 1002     | 2026-10-04 | 1         | 102        | 501      | 2        | 16000   | Москва  |
-| 1003     | 2026-10-04 | 2         | 103        | 502      | 3        | 3600    | СПб     |
-| 1004     | 2026-10-04 | 3         | 104        | 503      | 1        | 35000   | Москва  |
-| 1005     | 2026-10-04 | 4         | 105        | 504      | 1        | 60000   | Казань  |
-| 1006     | 2026-10-04 | 5         | 106        | 507      | 2        | 5000    | Новосибирск |
-| 1007     | 2026-10-04 | 1         | 102        | 508      | 1        | 8000    | Москва  |
+| order_id | order_dt   | seller_id | product_id | user_id | quantity | revenue | region  |
+|----------|------------|-----------|------------|---------|----------|---------|---------|
+| 1001     | 2026-10-02 | 1         | 101        | 501     | 1        | 45000   | Москва  |
+| 1002     | 2026-10-02 | 1         | 102        | 501     | 2        | 16000   | Москва  |
+| 1003     | 2026-10-02 | 2         | 103        | 502     | 3        | 3600    | СПб     |
+| 1004     | 2026-10-02 | 3         | 104        | 503     | 1        | 35000   | Москва  |
+| 1005     | 2026-10-02 | 4         | 105        | 504     | 1        | 60000   | Казань  |
+| 1006     | 2026-10-02 | 5         | 106        | 507     | 2        | 5000    | Новосибирск |
+| 1007     | 2026-10-02 | 1         | 102        | 508     | 1        | 8000    | Москва  |
 
 ## 🚀 Запуск проекта
 
@@ -128,7 +128,7 @@ CREATE TABLE orders (
     order_dt   DATE NOT NULL,
     seller_id  INT NOT NULL REFERENCES sellers(seller_id),
     product_id INT NOT NULL REFERENCES products(product_id),
-    buyer_id   INT NOT NULL REFERENCES users(user_id),
+    user_id    INT NOT NULL REFERENCES users(user_id),
     quantity   INT NOT NULL,
     revenue    NUMERIC(12,2) NOT NULL,
     region     VARCHAR(50) NOT NULL
@@ -138,7 +138,7 @@ CREATE TABLE orders (
 CREATE INDEX idx_orders_dt     ON orders(order_dt);
 CREATE INDEX idx_orders_seller ON orders(seller_id);
 CREATE INDEX idx_orders_region ON orders(region);
-CREATE INDEX idx_orders_buyer  ON orders(buyer_id);
+CREATE INDEX idx_orders_user   ON orders(user_id);
 CREATE INDEX idx_sellers_city  ON sellers(city_id);
 CREATE INDEX idx_users_city    ON users(city_id);
 
@@ -177,66 +177,66 @@ INSERT INTO products VALUES
 (106, 'Конструктор',       'Детские товары',    2500);
 
 INSERT INTO orders VALUES
-(1001, CURRENT_DATE - INTERVAL '6 days', 1, 101, 501, 1, 45000, 'Москва'),
-(1002, CURRENT_DATE - INTERVAL '6 days', 1, 102, 501, 2, 16000, 'Москва'),
-(1003, CURRENT_DATE - INTERVAL '6 days', 2, 103, 502, 3,  3600, 'СПб'),
-(1004, CURRENT_DATE - INTERVAL '6 days', 3, 104, 503, 1, 35000, 'Москва'),
-(1005, CURRENT_DATE - INTERVAL '6 days', 4, 105, 504, 1, 60000, 'Казань'),
-(1006, CURRENT_DATE - INTERVAL '6 days', 5, 106, 507, 2,  5000, 'Новосибирск'),
-(1007, CURRENT_DATE - INTERVAL '6 days', 1, 102, 508, 1,  8000, 'Москва'),
-(1008, CURRENT_DATE - INTERVAL '5 days', 1, 101, 501, 1, 45000, 'Москва'),
-(1009, CURRENT_DATE - INTERVAL '5 days', 2, 103, 502, 5,  6000, 'СПб'),
-(1010, CURRENT_DATE - INTERVAL '5 days', 3, 104, 503, 2, 70000, 'СПб'),
-(1011, CURRENT_DATE - INTERVAL '5 days', 4, 105, 504, 1, 60000, 'Москва'),
-(1012, CURRENT_DATE - INTERVAL '5 days', 5, 106, 505, 3,  7500, 'Москва'),
-(1013, CURRENT_DATE - INTERVAL '5 days', 1, 102, 506, 1,  8000, 'Москва'),
-(1014, CURRENT_DATE - INTERVAL '5 days', 2, 103, 509, 2,  2400, 'СПб'),
-(1015, CURRENT_DATE - INTERVAL '4 days', 1, 101, 501, 1, 45000, 'Москва'),
-(1016, CURRENT_DATE - INTERVAL '4 days', 1, 102, 502, 1,  8000, 'СПб'),
-(1017, CURRENT_DATE - INTERVAL '4 days', 3, 104, 504, 1, 35000, 'Казань'),
-(1018, CURRENT_DATE - INTERVAL '4 days', 4, 105, 504, 1, 60000, 'Москва'),
-(1019, CURRENT_DATE - INTERVAL '4 days', 5, 106, 505, 2,  5000, 'Москва'),
-(1020, CURRENT_DATE - INTERVAL '4 days', 2, 103, 506, 3,  3600, 'Москва'),
-(1021, CURRENT_DATE - INTERVAL '4 days', 1, 101, 507, 1, 45000, 'Новосибирск'),
-(1022, CURRENT_DATE - INTERVAL '4 days', 3, 104, 508, 1, 35000, 'Москва'),
-(1023, CURRENT_DATE - INTERVAL '3 days', 1, 101, 501, 1, 45000, 'Москва'),
-(1024, CURRENT_DATE - INTERVAL '3 days', 2, 103, 502, 4,  4800, 'СПб'),
-(1025, CURRENT_DATE - INTERVAL '3 days', 3, 104, 503, 1, 35000, 'Москва'),
-(1026, CURRENT_DATE - INTERVAL '3 days', 4, 105, 504, 1, 60000, 'Казань'),
-(1027, CURRENT_DATE - INTERVAL '3 days', 5, 106, 505, 3,  7500, 'Москва'),
-(1028, CURRENT_DATE - INTERVAL '3 days', 1, 102, 506, 2, 16000, 'Москва'),
-(1029, CURRENT_DATE - INTERVAL '3 days', 2, 103, 507, 5,  6000, 'Новосибирск'),
-(1030, CURRENT_DATE - INTERVAL '3 days', 4, 105, 508, 1, 60000, 'Москва'),
-(1031, CURRENT_DATE - INTERVAL '3 days', 5, 106, 509, 2,  5000, 'СПб'),
-(1032, CURRENT_DATE - INTERVAL '2 days', 1, 101, 501, 1, 45000, 'Москва'),
-(1033, CURRENT_DATE - INTERVAL '2 days', 1, 102, 502, 1,  8000, 'СПб'),
-(1034, CURRENT_DATE - INTERVAL '2 days', 3, 104, 503, 2, 70000, 'СПб'),
-(1035, CURRENT_DATE - INTERVAL '2 days', 4, 105, 504, 1, 60000, 'Москва'),
-(1036, CURRENT_DATE - INTERVAL '2 days', 5, 106, 505, 1,  2500, 'Москва'),
-(1037, CURRENT_DATE - INTERVAL '2 days', 2, 103, 506, 3,  3600, 'Москва'),
-(1038, CURRENT_DATE - INTERVAL '2 days', 1, 101, 507, 1, 45000, 'Новосибирск'),
-(1039, CURRENT_DATE - INTERVAL '2 days', 3, 104, 508, 1, 35000, 'Москва'),
-(1040, CURRENT_DATE - INTERVAL '2 days', 4, 105, 509, 1, 60000, 'СПб'),
-(1041, CURRENT_DATE - INTERVAL '1 day', 1, 101, 501, 1, 45000, 'Москва'),
-(1042, CURRENT_DATE - INTERVAL '1 day', 2, 103, 502, 2,  2400, 'СПб'),
-(1043, CURRENT_DATE - INTERVAL '1 day', 3, 104, 503, 1, 35000, 'Москва'),
-(1044, CURRENT_DATE - INTERVAL '1 day', 4, 105, 504, 1, 60000, 'Казань'),
-(1045, CURRENT_DATE - INTERVAL '1 day', 5, 106, 505, 2,  5000, 'Москва'),
-(1046, CURRENT_DATE - INTERVAL '1 day', 1, 102, 506, 1,  8000, 'Москва'),
-(1047, CURRENT_DATE - INTERVAL '1 day', 2, 103, 507, 3,  3600, 'Новосибирск'),
-(1048, CURRENT_DATE - INTERVAL '1 day', 3, 104, 508, 2, 70000, 'Москва'),
-(1049, CURRENT_DATE - INTERVAL '1 day', 4, 105, 509, 1, 60000, 'СПб'),
-(1050, CURRENT_DATE, 1, 101, 501, 1, 45000, 'Москва'),
-(1051, CURRENT_DATE, 1, 102, 502, 1,  8000, 'СПб'),
-(1052, CURRENT_DATE, 2, 103, 503, 2,  2400, 'Москва'),
-(1053, CURRENT_DATE, 3, 104, 504, 1, 35000, 'Казань'),
-(1054, CURRENT_DATE, 4, 105, 505, 1, 60000, 'Москва'),
-(1055, CURRENT_DATE, 5, 106, 506, 3,  7500, 'Москва'),
-(1056, CURRENT_DATE, 1, 101, 507, 1, 45000, 'Новосибирск'),
-(1057, CURRENT_DATE, 2, 103, 508, 2,  2400, 'Москва'),
-(1058, CURRENT_DATE, 3, 104, 509, 1, 35000, 'СПб'),
-(1059, CURRENT_DATE, 4, 105, 501, 1, 60000, 'Москва'),
-(1060, CURRENT_DATE, 5, 106, 502, 2,  5000, 'СПб');
+(1001, DATE '2026-10-02', 1, 101, 501, 1, 45000, 'Москва'),
+(1002, DATE '2026-10-02', 1, 102, 501, 2, 16000, 'Москва'),
+(1003, DATE '2026-10-02', 2, 103, 502, 3,  3600, 'СПб'),
+(1004, DATE '2026-10-02', 3, 104, 503, 1, 35000, 'Москва'),
+(1005, DATE '2026-10-02', 4, 105, 504, 1, 60000, 'Казань'),
+(1006, DATE '2026-10-02', 5, 106, 507, 2,  5000, 'Новосибирск'),
+(1007, DATE '2026-10-02', 1, 102, 508, 1,  8000, 'Москва'),
+(1008, DATE '2026-10-03', 1, 101, 501, 1, 45000, 'Москва'),
+(1009, DATE '2026-10-03', 2, 103, 502, 5,  6000, 'СПб'),
+(1010, DATE '2026-10-03', 3, 104, 503, 2, 70000, 'СПб'),
+(1011, DATE '2026-10-03', 4, 105, 504, 1, 60000, 'Москва'),
+(1012, DATE '2026-10-03', 5, 106, 505, 3,  7500, 'Москва'),
+(1013, DATE '2026-10-03', 1, 102, 506, 1,  8000, 'Москва'),
+(1014, DATE '2026-10-03', 2, 103, 509, 2,  2400, 'СПб'),
+(1015, DATE '2026-10-04', 1, 101, 501, 1, 45000, 'Москва'),
+(1016, DATE '2026-10-04', 1, 102, 502, 1,  8000, 'СПб'),
+(1017, DATE '2026-10-04', 3, 104, 504, 1, 35000, 'Казань'),
+(1018, DATE '2026-10-04', 4, 105, 504, 1, 60000, 'Москва'),
+(1019, DATE '2026-10-04', 5, 106, 505, 2,  5000, 'Москва'),
+(1020, DATE '2026-10-04', 2, 103, 506, 3,  3600, 'Москва'),
+(1021, DATE '2026-10-04', 1, 101, 507, 1, 45000, 'Новосибирск'),
+(1022, DATE '2026-10-04', 3, 104, 508, 1, 35000, 'Москва'),
+(1023, DATE '2026-10-05', 1, 101, 501, 1, 45000, 'Москва'),
+(1024, DATE '2026-10-05', 2, 103, 502, 4,  4800, 'СПб'),
+(1025, DATE '2026-10-05', 3, 104, 503, 1, 35000, 'Москва'),
+(1026, DATE '2026-10-05', 4, 105, 504, 1, 60000, 'Казань'),
+(1027, DATE '2026-10-05', 5, 106, 505, 3,  7500, 'Москва'),
+(1028, DATE '2026-10-05', 1, 102, 506, 2, 16000, 'Москва'),
+(1029, DATE '2026-10-05', 2, 103, 507, 5,  6000, 'Новосибирск'),
+(1030, DATE '2026-10-05', 4, 105, 508, 1, 60000, 'Москва'),
+(1031, DATE '2026-10-05', 5, 106, 509, 2,  5000, 'СПб'),
+(1032, DATE '2026-10-06', 1, 101, 501, 1, 45000, 'Москва'),
+(1033, DATE '2026-10-06', 1, 102, 502, 1,  8000, 'СПб'),
+(1034, DATE '2026-10-06', 3, 104, 503, 2, 70000, 'СПб'),
+(1035, DATE '2026-10-06', 4, 105, 504, 1, 60000, 'Москва'),
+(1036, DATE '2026-10-06', 5, 106, 505, 1,  2500, 'Москва'),
+(1037, DATE '2026-10-06', 2, 103, 506, 3,  3600, 'Москва'),
+(1038, DATE '2026-10-06', 1, 101, 507, 1, 45000, 'Новосибирск'),
+(1039, DATE '2026-10-06', 3, 104, 508, 1, 35000, 'Москва'),
+(1040, DATE '2026-10-06', 4, 105, 509, 1, 60000, 'СПб'),
+(1041, DATE '2026-10-07', 1, 101, 501, 1, 45000, 'Москва'),
+(1042, DATE '2026-10-07', 2, 103, 502, 2,  2400, 'СПб'),
+(1043, DATE '2026-10-07', 3, 104, 503, 1, 35000, 'Москва'),
+(1044, DATE '2026-10-07', 4, 105, 504, 1, 60000, 'Казань'),
+(1045, DATE '2026-10-07', 5, 106, 505, 2,  5000, 'Москва'),
+(1046, DATE '2026-10-07', 1, 102, 506, 1,  8000, 'Москва'),
+(1047, DATE '2026-10-07', 2, 103, 507, 3,  3600, 'Новосибирск'),
+(1048, DATE '2026-10-07', 3, 104, 508, 2, 70000, 'Москва'),
+(1049, DATE '2026-10-07', 4, 105, 509, 1, 60000, 'СПб'),
+(1050, DATE '2026-10-08', 1, 101, 501, 1, 45000, 'Москва'),
+(1051, DATE '2026-10-08', 1, 102, 502, 1,  8000, 'СПб'),
+(1052, DATE '2026-10-08', 2, 103, 503, 2,  2400, 'Москва'),
+(1053, DATE '2026-10-08', 3, 104, 504, 1, 35000, 'Казань'),
+(1054, DATE '2026-10-08', 4, 105, 505, 1, 60000, 'Москва'),
+(1055, DATE '2026-10-08', 5, 106, 506, 3,  7500, 'Москва'),
+(1056, DATE '2026-10-08', 1, 101, 507, 1, 45000, 'Новосибирск'),
+(1057, DATE '2026-10-08', 2, 103, 508, 2,  2400, 'Москва'),
+(1058, DATE '2026-10-08', 3, 104, 509, 1, 35000, 'СПб'),
+(1059, DATE '2026-10-08', 4, 105, 501, 1, 60000, 'Москва'),
+(1060, DATE '2026-10-08', 5, 106, 502, 2,  5000, 'СПб');
 ```
 
 ## 📈 Аналитические запросы
@@ -246,7 +246,7 @@ INSERT INTO orders VALUES
 SELECT
     SUM(revenue)              AS gmv,
     COUNT(DISTINCT order_id)  AS orders_count,
-    COUNT(DISTINCT buyer_id)  AS buyers_count
+    COUNT(DISTINCT user_id)   AS buyers_count
 FROM orders;
 ```
 **Результат:**
@@ -291,7 +291,7 @@ SELECT
     region,
     SUM(revenue)              AS revenue,
     COUNT(DISTINCT order_id)  AS orders_cnt,
-    COUNT(DISTINCT buyer_id)  AS buyers
+    COUNT(DISTINCT user_id)   AS buyers
 FROM orders
 GROUP BY region
 ORDER BY revenue DESC;
@@ -318,7 +318,6 @@ FROM orders
 GROUP BY order_dt
 ORDER BY order_dt;
 ```
-
 **Результат:**
 |------------|-----------|--------------|----------------|
 | order_dt   | daily_gmv | daily_orders | cumulative_gmv |
@@ -344,13 +343,12 @@ SELECT
     MAX(o.order_dt)            AS last_order,
     SUM(o.revenue)             AS lifetime_revenue
 FROM orders o
-JOIN users  u ON o.buyer_id = u.user_id
-JOIN cities c ON u.city_id  = c.city_id
+JOIN users  u ON o.user_id = u.user_id
+JOIN cities c ON u.city_id = c.city_id
 GROUP BY u.user_id, u.user_name, c.city_name
 HAVING COUNT(DISTINCT o.order_dt) > 1
 ORDER BY active_days DESC, lifetime_revenue DESC;
 ```
-
 **Результат:**
 |---------|-----------------|-----------------|-------------|-------------|------------|------------------|
 | user_id | user_name       | city_name       | active_days | first_order | last_order | lifetime_revenue |
@@ -507,10 +505,10 @@ SELECT
     s.seller_id,
     s.seller_name,
     c.city_name,
-    COUNT(DISTINCT o.buyer_id) AS buyers_from_same_city
+    COUNT(DISTINCT o.user_id) AS buyers_from_same_city
 FROM orders o
 JOIN sellers s ON o.seller_id = s.seller_id
-JOIN users   u ON o.buyer_id  = u.user_id
+JOIN users   u ON o.user_id   = u.user_id
 JOIN cities  c ON s.city_id   = c.city_id
 WHERE s.city_id = u.city_id
 GROUP BY s.seller_id, s.seller_name, c.city_name
@@ -533,27 +531,28 @@ ORDER BY buyers_from_same_city DESC;
 EXPLAIN ANALYZE
 SELECT region, SUM(revenue)
 FROM orders
-WHERE order_dt >= CURRENT_DATE - INTERVAL '3 days'
+WHERE order_dt >= DATE '2026-10-05'
 GROUP BY region;
 ```
 **Результат (план запроса):**
 |---------------------------------------------------------------------------------------------------------------|
 | QUERY PLAN                                                                                                    |
 |---------------------------------------------------------------------------------------------------------------|
-| HashAggregate  (cost=18.24..19.69 rows=116 width=150) (actual time=0.322..0.325 rows=4.00 loops=1)            |
+| HashAggregate  (cost=16.09..17.54 rows=116 width=150) (actual time=0.069..0.072 rows=4.00 loops=1)            |
 |   Group Key: region                                                                                           |
 |   Batches: 1  Memory Usage: 32kB                                                                              |
 |   Buffers: shared hit=1                                                                                       |
-|   ->  Seq Scan on orders  (cost=0.00..17.52 rows=143 width=134) (actual time=0.033..0.047 rows=38.00 loops=1) |
-|         Filter: (order_dt >= (CURRENT_DATE - '3 days'::interval))                                             |
+|   ->  Seq Scan on orders  (cost=0.00..15.38 rows=143 width=134) (actual time=0.030..0.035 rows=38.00 loops=1) |
+|         Filter: (order_dt >= '2026-10-05'::date)                                                              |
 |         Rows Removed by Filter: 22                                                                            |
 |         Buffers: shared hit=1                                                                                 |
 | Planning:                                                                                                     |
 |   Buffers: shared hit=3                                                                                       |
-| Planning Time: 0.281 ms                                                                                       |
-| Execution Time: 0.369 ms                                                                                      |
+| Planning Time: 0.275 ms                                                                                       |
+| Execution Time: 0.146 ms                                                                                      |
 
-> **Бизнес-смысл:** демонстрация понимания планов запросов. Ожидается `Index Scan` по `idx_orders_dt` вместо `Seq Scan` — это доказывает, что индекс реально используется. Что показывает план: Seq Scan по orders, потому что таблица маленькая (60 строк) — оптимизатор справедливо решает, что прочитать всю таблицу дешевле, чем идти в индекс. На реальных объёмах (миллионы строк) при таком же запросе PostgreSQL выберет Index Scan по idx_orders_dt. Это демонстрирует понимание того, что индекс — не всегда быстрее, и что решение принимает планировщик на основе статистики.
+
+> **Бизнес-смысл:** демонстрация понимания планов запросов. На таблице из 60 строк оптимизатор выбирает `Seq Scan`, потому что последовательное чтение дешевле, чем доступ через индекс. Это нормальное поведение планировщика: **индекс используется только тогда, когда он реально быстрее**. На реальных объёмах (миллионы заказов) при таком же запросе PostgreSQL выберет `Index Scan` по `idx_orders_dt` — именно для этого индекс и создавался. Проверить это можно, временно отключив `Seq Scan` через `SET enable_seqscan = off` перед запросом.
 
 ## 📁 Структура проекта
 
@@ -576,4 +575,4 @@ postgresql-marketplace-analytics/
 
 ## 🔗 Интерактивная демонстрация
 
-[Открыть в SQLize.online — PostgreSQL](https://sqlize.online/sql/psql/](https://sqlize.online/sql/psql18/0c527962b26f9c548791137b6d14a904)
+[Открыть в SQLize.online — PostgreSQL](https://sqlize.online/sql/psql18/5dded27cc226a54fda3d8ee935ebf8b3/)
