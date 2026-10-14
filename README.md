@@ -1,6 +1,6 @@
 # PostgreSQL Marketplace Analytics
 
-Аналитический проект на PostgreSQL: расчёт продуктовых метрик маркетплейса (DAU, WAU, MAU, ARPU, ARPPU, CR, Retention) на реляционной схеме с индексами и генерацией синтетических данных.
+Аналитический проект на PostgreSQL: расчёт продуктовых метрик маркетплейса (DAU, WAU, MAU, ARPU, ARPPU, CR, Retention) на реляционной схеме с индексами и воспроизводимой генерацией синтетических данных.
 
 ## 📖 О проекте
 
@@ -8,9 +8,11 @@
 
 Проект отвечает на вопросы: как спроектировать нормализованную схему под аналитику маркетплейса, как эффективно считать DAU/WAU/MAU, как использовать оконные функции для retention-матрицы. В качестве примера используется маркетплейс: заказы, покупатели, товары и действия пользователей.
 
+Данные генерируются с фиксированным seed через `setseed()`, поэтому при каждом запуске скрипта получается один и тот же набор строк — метрики воспроизводимы.
+
 ## 🛠️ Технологии
 
-- **PostgreSQL** — оконные функции, CTE, `FILTER`, индексы, `generate_series`, `date_trunc`, `EXPLAIN ANALYZE`
+- **PostgreSQL** — оконные функции, CTE, `FILTER`, индексы, `generate_series`, `date_trunc`, `setseed`, `EXPLAIN ANALYZE`
 - **SQL** — агрегации, JOIN, работа с датами и интервалами
 - **SQLize.online** — онлайн-песочница для запуска
 
@@ -118,7 +120,12 @@ CREATE INDEX idx_orders_user  ON orders(user_id);
 
 ### 2. Генерация данных
 
+> Перед вставкой выставляем seed через `setseed(0.42)`. Один и тот же seed даёт одну и ту же последовательность значений `random()` — данные будут воспроизводимы при каждом запуске.
+
 ```sql
+-- Фиксируем seed, чтобы random() давал воспроизводимую последовательность
+SELECT setseed(0.42);
+
 -- Пользователи
 INSERT INTO users (user_id, user_name, reg_dt, city)
 SELECT
@@ -137,25 +144,25 @@ SELECT
     (ARRAY[500, 1200, 2500, 8000, 15000, 35000, 45000, 60000])[1 + (random()*7)::int]
 FROM generate_series(1, 50) AS g;
 
--- Заказы
+-- Заказы: creation_time считается от reg_dt пользователя,
+-- поэтому все 3000 заказов гарантированно вставятся.
 WITH raw AS (
     SELECT
         g AS order_id,
         1 + (random() * 299)::int AS user_id,
-        TIMESTAMP '2024-01-01'
-            + (random() * 180)::int * INTERVAL '1 day'
-            + (random() * 86400)::int * INTERVAL '1 second' AS creation_time,
         (random() < 0.10) AS is_canceled
     FROM generate_series(1, 3000) AS g
 )
 INSERT INTO orders (order_id, user_id, creation_time, status)
 SELECT
-    order_id,
-    user_id,
-    creation_time,
-    CASE WHEN is_canceled THEN 'canceled' ELSE 'created' END
-FROM raw
-WHERE creation_time >= (SELECT reg_dt FROM users u WHERE u.user_id = raw.user_id)::timestamp;
+    r.order_id,
+    r.user_id,
+    u.reg_dt::timestamp
+        + (random() * 180)::int * INTERVAL '1 day'
+        + (random() * 86400)::int * INTERVAL '1 second' AS creation_time,
+    CASE WHEN r.is_canceled THEN 'canceled' ELSE 'created' END
+FROM raw r
+JOIN users u ON u.user_id = r.user_id;
 
 -- Действия: create_order
 INSERT INTO user_actions (user_id, order_id, action, time)
@@ -168,16 +175,28 @@ SELECT user_id, order_id, 'cancel_order', creation_time + INTERVAL '1 hour'
 FROM orders
 WHERE status = 'canceled';
 
--- Позиции заказов
+-- Позиции заказов: без дублей product_id внутри заказа
 INSERT INTO order_items (order_id, product_id, quantity)
-SELECT
+SELECT DISTINCT
     o.order_id,
-    1 + (random() * 49)::int,
-    1 + (random() * 2)::int
+    1 + (random() * 49)::int AS product_id,
+    1 + (random() * 2)::int AS quantity
 FROM orders o
-CROSS JOIN generate_series(1, 1 + (random() * 2)::int) AS g
+CROSS JOIN generate_series(1, 3) AS g
 ON CONFLICT DO NOTHING;
 ```
+
+> **Проверка воспроизводимости.** Выполните скрипт дважды и сравните:
+> ```sql
+> SELECT COUNT(*), SUM(revenue) FROM (
+>     SELECT o.order_id, SUM(p.price * oi.quantity) AS revenue
+>     FROM orders o
+>     JOIN order_items oi ON oi.order_id = o.order_id
+>     JOIN products p ON p.product_id = oi.product_id
+>     GROUP BY o.order_id
+> ) t;
+> ```
+> Числа должны совпасть.
 
 ---
 
@@ -190,7 +209,7 @@ SELECT
     time::date AS date,
     COUNT(DISTINCT user_id) AS dau
 FROM user_actions
-GROUP BY date
+GROUP BY time::date
 ORDER BY date;
 ```
 
@@ -203,7 +222,7 @@ SELECT
     date_trunc('week', time) AS week,
     COUNT(DISTINCT user_id)  AS wau
 FROM user_actions
-GROUP BY week
+GROUP BY date_trunc('week', time)
 ORDER BY week;
 ```
 
@@ -215,11 +234,11 @@ SELECT
     COUNT(DISTINCT user_id)        AS wau,
     COUNT(DISTINCT time::date)     AS active_days
 FROM user_actions
-GROUP BY week
+GROUP BY date_trunc('week', time)
 ORDER BY week;
 ```
 
-> **Бизнес-смысл:** `date_trunc('week', ...)` в PostgreSQL начинает неделю с понедельника (ISO 8601). Если `active_days < 7` — неделя неполная (первая или последняя в данных), WAU на ней занижен.
+> **Бизнес-смысл:** `date_trunc('week', ...)` в PostgreSQL начинает неделю с понедельника (ISO 8601). Если `active_days < 7` — неделя неполная, WAU на ней занижен.
 
 ### 3. MAU — по календарным месяцам
 
@@ -228,7 +247,7 @@ SELECT
     date_trunc('month', time)::date AS month,
     COUNT(DISTINCT user_id)         AS mau
 FROM user_actions
-GROUP BY month
+GROUP BY date_trunc('month', time)
 ORDER BY month;
 ```
 
@@ -249,12 +268,12 @@ WITH daily_revenue AS (
     WHERE o.order_id NOT IN (
         SELECT order_id FROM user_actions WHERE action = 'cancel_order'
     )
-    GROUP BY 1
+    GROUP BY o.creation_time::date
 ),
 daily_users AS (
     SELECT time::date AS date, COUNT(DISTINCT user_id) AS users
     FROM user_actions
-    GROUP BY 1
+    GROUP BY time::date
 )
 SELECT
     r.date,
@@ -273,7 +292,7 @@ ORDER BY r.date;
 WITH daily_active AS (
     SELECT time::date AS date, COUNT(DISTINCT user_id) AS active_users
     FROM user_actions
-    GROUP BY 1
+    GROUP BY time::date
 ),
 daily_buyers AS (
     SELECT
@@ -284,7 +303,7 @@ daily_buyers AS (
       AND order_id NOT IN (
           SELECT order_id FROM user_actions WHERE action = 'cancel_order'
       )
-    GROUP BY 1
+    GROUP BY time::date
 )
 SELECT
     a.date,
@@ -331,20 +350,31 @@ ORDER BY start_date, day_number;
 
 ### 7. Retention-матрица — дневная
 
+Возвращает таблицу с колонками `start_month`, `start_date`, `cohort_size` и `0`–`15` с retention по дням. Пустые ячейки — `NULL` (когорта ещё не прожила столько дней).
+
 ```sql
-SELECT
-    start_date,
-    MAX(CASE WHEN day_number = 0  THEN retention END) AS d0,
-    MAX(CASE WHEN day_number = 1  THEN retention END) AS d1,
-    MAX(CASE WHEN day_number = 2  THEN retention END) AS d2,
-    MAX(CASE WHEN day_number = 3  THEN retention END) AS d3,
-    MAX(CASE WHEN day_number = 4  THEN retention END) AS d4,
-    MAX(CASE WHEN day_number = 5  THEN retention END) AS d5,
-    MAX(CASE WHEN day_number = 6  THEN retention END) AS d6,
-    MAX(CASE WHEN day_number = 7  THEN retention END) AS d7,
-    MAX(CASE WHEN day_number = 14 THEN retention END) AS d14,
-    MAX(CASE WHEN day_number = 30 THEN retention END) AS d30
-FROM (
+WITH cohort AS (
+    SELECT
+        start_date,
+        time::date AS date,
+        COUNT(DISTINCT user_id) AS users
+    FROM (
+        SELECT
+            user_id,
+            time::date,
+            MIN(time::date) OVER (PARTITION BY user_id) AS start_date
+        FROM user_actions
+    ) t1
+    GROUP BY start_date, time::date
+),
+cohort_size AS (
+    SELECT
+        start_date,
+        users AS cohort_size
+    FROM cohort
+    WHERE date = start_date
+),
+retention AS (
     SELECT
         start_date,
         date - start_date AS day_number,
@@ -352,41 +382,69 @@ FROM (
             users::decimal / MAX(users) OVER (PARTITION BY start_date),
             2
         ) AS retention
-    FROM (
-        SELECT
-            start_date,
-            time::date AS date,
-            COUNT(DISTINCT user_id) AS users
-        FROM (
-            SELECT
-                user_id,
-                time::date,
-                MIN(time::date) OVER (PARTITION BY user_id) AS start_date
-            FROM user_actions
-        ) t1
-        GROUP BY start_date, time::date
-    ) t2
-) t3
-GROUP BY start_date
-ORDER BY start_date;
+    FROM cohort
+)
+SELECT
+    date_trunc('month', r.start_date)::date AS start_month,
+    r.start_date,
+    cs.cohort_size,
+    COALESCE(MAX(CASE WHEN day_number = 0  THEN retention END), 1.00) AS "0",
+    MAX(CASE WHEN day_number = 1  THEN retention END) AS "1",
+    MAX(CASE WHEN day_number = 2  THEN retention END) AS "2",
+    MAX(CASE WHEN day_number = 3  THEN retention END) AS "3",
+    MAX(CASE WHEN day_number = 4  THEN retention END) AS "4",
+    MAX(CASE WHEN day_number = 5  THEN retention END) AS "5",
+    MAX(CASE WHEN day_number = 6  THEN retention END) AS "6",
+    MAX(CASE WHEN day_number = 7  THEN retention END) AS "7",
+    MAX(CASE WHEN day_number = 8  THEN retention END) AS "8",
+    MAX(CASE WHEN day_number = 9  THEN retention END) AS "9",
+    MAX(CASE WHEN day_number = 10 THEN retention END) AS "10",
+    MAX(CASE WHEN day_number = 11 THEN retention END) AS "11",
+    MAX(CASE WHEN day_number = 12 THEN retention END) AS "12",
+    MAX(CASE WHEN day_number = 13 THEN retention END) AS "13",
+    MAX(CASE WHEN day_number = 14 THEN retention END) AS "14",
+    MAX(CASE WHEN day_number = 15 THEN retention END) AS "15"
+FROM retention r
+JOIN cohort_size cs ON cs.start_date = r.start_date
+GROUP BY date_trunc('month', r.start_date)::date, r.start_date, cs.cohort_size
+ORDER BY r.start_date;
 ```
 
-> **Бизнес-смысл:** матрица позволяет сравнивать когорты между собой. `d0` всегда 1.00, `NULL` — в этот день никто не вернулся.
+**Что на выходе:**
+
+| start_month | start_date | cohort_size | 0 | 1 | 2 | 3 | 4 | 5 | … | 15 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 2024-01-01 | 2024-01-01 | 45 | 1.00 | 0.14 | 0.15 | 0.18 | 0.19 | 0.14 | … | 0.07 |
+| 2024-01-01 | 2024-01-02 | 38 | 1.00 | 0.18 | 0.16 | 0.19 | 0.17 | 0.19 | … | |
+| 2024-01-01 | 2024-01-03 | 41 | 1.00 | 0.22 | 0.20 | 0.22 | 0.17 | 0.15 | … | |
+
+> **Бизнес-смысл:** матрица позволяет сравнивать когорты между собой. `cohort_size` — размер когорты (число пользователей, впервые появившихся в этот день). `day_number = 0` всегда `1.00`. `NULL` — данных за этот день ещё нет.
 
 ### 8. Retention-матрица — недельная
 
 ```sql
-SELECT
-    start_date,
-    MAX(CASE WHEN week_number = 0 THEN retention END) AS w0,
-    MAX(CASE WHEN week_number = 1 THEN retention END) AS w1,
-    MAX(CASE WHEN week_number = 2 THEN retention END) AS w2,
-    MAX(CASE WHEN week_number = 3 THEN retention END) AS w3,
-    MAX(CASE WHEN week_number = 4 THEN retention END) AS w4,
-    MAX(CASE WHEN week_number = 5 THEN retention END) AS w5,
-    MAX(CASE WHEN week_number = 6 THEN retention END) AS w6,
-    MAX(CASE WHEN week_number = 7 THEN retention END) AS w7
-FROM (
+WITH cohort AS (
+    SELECT
+        start_date,
+        time::date AS date,
+        COUNT(DISTINCT user_id) AS users
+    FROM (
+        SELECT
+            user_id,
+            time::date,
+            MIN(time::date) OVER (PARTITION BY user_id) AS start_date
+        FROM user_actions
+    ) t1
+    GROUP BY start_date, time::date
+),
+cohort_size AS (
+    SELECT
+        start_date,
+        users AS cohort_size
+    FROM cohort
+    WHERE date = start_date
+),
+retention AS (
     SELECT
         start_date,
         (date - start_date) / 7 AS week_number,
@@ -394,23 +452,25 @@ FROM (
             users::decimal / MAX(users) OVER (PARTITION BY start_date),
             2
         ) AS retention
-    FROM (
-        SELECT
-            start_date,
-            time::date AS date,
-            COUNT(DISTINCT user_id) AS users
-        FROM (
-            SELECT
-                user_id,
-                time::date,
-                MIN(time::date) OVER (PARTITION BY user_id) AS start_date
-            FROM user_actions
-        ) t1
-        GROUP BY start_date, time::date
-    ) t2
-) t3
-GROUP BY start_date
-ORDER BY start_date;
+    FROM cohort
+)
+SELECT
+    date_trunc('month', r.start_date)::date AS start_month,
+    r.start_date,
+    cs.cohort_size,
+    COALESCE(MAX(CASE WHEN week_number = 0 THEN retention END), 1.00) AS "w0",
+    MAX(CASE WHEN week_number = 1 THEN retention END) AS "w1",
+    MAX(CASE WHEN week_number = 2 THEN retention END) AS "w2",
+    MAX(CASE WHEN week_number = 3 THEN retention END) AS "w3",
+    MAX(CASE WHEN week_number = 4 THEN retention END) AS "w4",
+    MAX(CASE WHEN week_number = 5 THEN retention END) AS "w5",
+    MAX(CASE WHEN week_number = 6 THEN retention END) AS "w6",
+    MAX(CASE WHEN week_number = 7 THEN retention END) AS "w7",
+    MAX(CASE WHEN week_number = 8 THEN retention END) AS "w8"
+FROM retention r
+JOIN cohort_size cs ON cs.start_date = r.start_date
+GROUP BY date_trunc('month', r.start_date)::date, r.start_date, cs.cohort_size
+ORDER BY r.start_date;
 ```
 
 > **Бизнес-смысл:** недельный шаг сглаживает шум и удобен, если ежедневные когорты слишком мелкие.
@@ -418,15 +478,28 @@ ORDER BY start_date;
 ### 9. Retention-матрица — месячная
 
 ```sql
-SELECT
-    start_date,
-    MAX(CASE WHEN month_number = 0 THEN retention END) AS m0,
-    MAX(CASE WHEN month_number = 1 THEN retention END) AS m1,
-    MAX(CASE WHEN month_number = 2 THEN retention END) AS m2,
-    MAX(CASE WHEN month_number = 3 THEN retention END) AS m3,
-    MAX(CASE WHEN month_number = 4 THEN retention END) AS m4,
-    MAX(CASE WHEN month_number = 5 THEN retention END) AS m5
-FROM (
+WITH cohort AS (
+    SELECT
+        start_date,
+        time::date AS date,
+        COUNT(DISTINCT user_id) AS users
+    FROM (
+        SELECT
+            user_id,
+            time::date,
+            MIN(time::date) OVER (PARTITION BY user_id) AS start_date
+        FROM user_actions
+    ) t1
+    GROUP BY start_date, time::date
+),
+cohort_size AS (
+    SELECT
+        start_date,
+        users AS cohort_size
+    FROM cohort
+    WHERE date = start_date
+),
+retention AS (
     SELECT
         start_date,
         (
@@ -437,23 +510,22 @@ FROM (
             users::decimal / MAX(users) OVER (PARTITION BY start_date),
             2
         ) AS retention
-    FROM (
-        SELECT
-            start_date,
-            time::date AS date,
-            COUNT(DISTINCT user_id) AS users
-        FROM (
-            SELECT
-                user_id,
-                time::date,
-                MIN(time::date) OVER (PARTITION BY user_id) AS start_date
-            FROM user_actions
-        ) t1
-        GROUP BY start_date, time::date
-    ) t2
-) t3
-GROUP BY start_date
-ORDER BY start_date;
+    FROM cohort
+)
+SELECT
+    date_trunc('month', r.start_date)::date AS start_month,
+    r.start_date,
+    cs.cohort_size,
+    COALESCE(MAX(CASE WHEN month_number = 0 THEN retention END), 1.00) AS "m0",
+    MAX(CASE WHEN month_number = 1 THEN retention END) AS "m1",
+    MAX(CASE WHEN month_number = 2 THEN retention END) AS "m2",
+    MAX(CASE WHEN month_number = 3 THEN retention END) AS "m3",
+    MAX(CASE WHEN month_number = 4 THEN retention END) AS "m4",
+    MAX(CASE WHEN month_number = 5 THEN retention END) AS "m5"
+FROM retention r
+JOIN cohort_size cs ON cs.start_date = r.start_date
+GROUP BY date_trunc('month', r.start_date)::date, r.start_date, cs.cohort_size
+ORDER BY r.start_date;
 ```
 
 > **Бизнес-смысл:** месячная матрица — классический формат для отчётов по удержанию. `m0` — месяц первого появления, `m1` — следующий и т.д.
@@ -470,7 +542,7 @@ SELECT
     date_trunc('week', time) AS week,
     COUNT(DISTINCT user_id)  AS wau
 FROM user_actions
-GROUP BY week;
+GROUP BY date_trunc('week', time);
 ```
 
 Что смотреть в выводе:
@@ -487,7 +559,7 @@ SET enable_seqscan = off;
 EXPLAIN ANALYZE
 SELECT date_trunc('week', time) AS week, COUNT(DISTINCT user_id) AS wau
 FROM user_actions
-GROUP BY week;
+GROUP BY date_trunc('week', time);
 SET enable_seqscan = on;
 ```
 
@@ -498,8 +570,9 @@ SET enable_seqscan = on;
 - Навык проектирования нормализованной реляционной схемы под аналитические нагрузки (факт + измерения, PK/FK).
 - Умение писать аналитические запросы на PostgreSQL: оконные функции, CTE, `FILTER`, множественные `JOIN`.
 - Знание оптимизаций: индексы, `EXPLAIN ANALYZE`, понимание планов запросов.
-- Понимание важности группировки по ID, а не по именам.
-- Работа с продуктовыми метриками маркетплейса: DAU, WAU, MAU, ARPU, ARPPU, CR, retention (дневной, недельный, месячный).
+- Воспроизводимая генерация данных через `setseed` — одинаковый результат при каждом запуске.
+- Retention-матрицы в трёх разрезах (день, неделя, месяц) с колонкой `cohort_size`.
+- Работа с продуктовыми метриками маркетплейса: DAU, WAU, MAU, ARPU, ARPPU, CR, retention.
 
 ## 🔗 Интерактивная демонстрация
 
