@@ -1,4 +1,4 @@
-# PostgreSQL Marketplace Analytics
+# PostgreSQL Product Analytics
 
 Аналитический проект на PostgreSQL: расчёт продуктовых метрик - DAU, WAU, MAU, ARPU, ARPPU, CR, Retention.
 
