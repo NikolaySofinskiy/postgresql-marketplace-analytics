@@ -69,7 +69,7 @@
 
 ## 🚀 Запуск проекта
 
-Все шаги выполняются в [SQLize.online — PostgreSQL](https://sqlize.online/sql/psql/).
+Все шаги выполняются в [SQLize.online — PostgreSQL](https://sqlize.online/).
 
 > ⚠️ **Важно:** SQLize.online не сохраняет состояние между отдельными запусками. Каждый `Run` создаёт новую временную базу данных. Поэтому весь код ниже нужно выполнить за один запуск, а не по частям.
 
@@ -687,4 +687,4 @@ SET enable_seqscan = on;
 
 ## 🔗 Интерактивная демонстрация
 
-[Открыть в SQLize.online — PostgreSQL](https://sqlize.online/sql/psql/)
+[Открыть в SQLize.online — PostgreSQL](https://sqlize.online/sql/psql18/e2af78017f3bf8bf0586b12a80b9e0fb/)
