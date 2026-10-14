@@ -1,87 +1,69 @@
 # PostgreSQL Marketplace Analytics
 
-Аналитический проект на PostgreSQL: расчёт продуктовых метрик маркетплейса (GMV, воронка продавцов, retention) на реляционной схеме с индексами.
+Аналитический проект на PostgreSQL: расчёт продуктовых метрик маркетплейса (DAU, WAU, MAU, ARPU, ARPPU, CR, Retention) на реляционной схеме с индексами и генерацией синтетических данных.
 
 ## 📖 О проекте
 
-Проект показывает полный цикл работы с PostgreSQL: проектирование схемы, загрузку данных и расчёт метрик. Цель — продемонстрировать навыки работы с реляционной СУБД и понимание того, чем аналитическая (OLAP) нагрузка отличается от транзакционной (OLTP).
+Проект показывает полный цикл работы с PostgreSQL: проектирование схемы, генерацию данных и расчёт продуктовых метрик. Цель — продемонстрировать навыки работы с PostgreSQL и понимание продуктовых метрик маркетплейса.
 
-Проект отвечает на вопросы: как спроектировать нормализованную схему под аналитику маркетплейса, как эффективно считать GMV и удержание, как использовать оконные функции для ранжирования и накопительных итогов. В качестве примера используется маркетплейс: заказы, продавцы, покупатели, товары и города. Такой сценарий хорошо знаком любому продуктовому аналитику и позволяет показать реальные метрики: GMV, топ продавцов, средний чек, retention, география.
+Проект отвечает на вопросы: как спроектировать нормализованную схему под аналитику маркетплейса, как эффективно считать DAU/WAU/MAU, как использовать оконные функции для retention-матрицы. В качестве примера используется маркетплейс: заказы, покупатели, товары и действия пользователей.
 
 ## 🛠️ Технологии
 
-- **PostgreSQL** — оконные функции, CTE, FILTER, индексы, EXPLAIN ANALYZE
-- **SQL** — агрегации, JOIN, DATE_TRUNC, работа с датами
+- **PostgreSQL** — оконные функции, CTE, `FILTER`, индексы, `generate_series`, `date_trunc`, `EXPLAIN ANALYZE`
+- **SQL** — агрегации, JOIN, работа с датами и интервалами
 - **SQLize.online** — онлайн-песочница для запуска
 
 ## 📊 Схема данных
 
-Пять таблиц: `orders` (факт), `sellers`, `users`, `products`, `cities` (измерения). 
-
-### Таблица `cities`
-
-| Колонка   | Тип         | Описание           |
-|-----------|-------------|--------------------|
-| city_id   | INT         | ID города (PK)     |
-| city_name | VARCHAR(50) | Название города    |
-
-### Таблица `sellers`
-
-| Колонка     | Тип          | Описание                  |
-|-------------|--------------|---------------------------|
-| seller_id   | INT          | ID продавца (PK)          |
-| seller_name | VARCHAR(100) | Название                  |
-| join_dt     | DATE         | Дата регистрации          |
-| city_id     | INT          | ID города (FK → cities)   |
+Пять таблиц: `orders` (факт), `order_items` (детализация), `users`, `products` (измерения), `user_actions` (лог действий).
 
 ### Таблица `users`
 
-| Колонка   | Тип          | Описание                  |
-|-----------|--------------|---------------------------|
-| user_id   | INT          | ID покупателя (PK)        |
-| user_name | VARCHAR(100) | Имя                       |
-| reg_dt    | DATE         | Дата регистрации          |
-| city_id   | INT          | ID города (FK → cities)   |
+| Колонка   | Тип          | Описание              |
+|-----------|--------------|-----------------------|
+| user_id   | INT          | ID покупателя (PK)    |
+| user_name | VARCHAR(100) | Имя                   |
+| reg_dt    | DATE         | Дата регистрации      |
+| city      | VARCHAR(50)  | Город                 |
 
 ### Таблица `products`
 
-| Колонка      | Тип           | Описание             |
-|--------------|---------------|----------------------|
-| product_id   | INT           | ID товара (PK)       |
-| product_name | VARCHAR(200)  | Название             |
-| category     | VARCHAR(50)   | Категория            |
-| price        | NUMERIC(10,2) | Цена                 |
+| Колонка      | Тип           | Описание          |
+|--------------|---------------|-------------------|
+| product_id   | INT           | ID товара (PK)    |
+| product_name | VARCHAR(200)  | Название          |
+| category     | VARCHAR(50)   | Категория         |
+| price        | NUMERIC(10,2) | Цена              |
 
 ### Таблица `orders`
 
-| Колонка    | Тип           | Описание                |
-|------------|---------------|-------------------------|
-| order_id   | INT           | ID заказа (PK)          |
-| order_dt   | DATE          | Дата заказа             |
-| seller_id  | INT           | ID продавца (FK)        |
-| product_id | INT           | ID товара (FK)          |
-| user_id    | INT           | ID покупателя (FK)      |
-| quantity   | INT           | Количество              |
-| revenue    | NUMERIC(12,2) | Выручка                 |
-| region     | VARCHAR(50)   | Регион доставки         |
+| Колонка       | Тип          | Описание                |
+|---------------|--------------|-------------------------|
+| order_id      | INT          | ID заказа (PK)          |
+| user_id       | INT          | ID покупателя (FK)      |
+| creation_time | TIMESTAMP    | Дата и время заказа     |
+| status        | VARCHAR(20)  | `created` / `canceled`  |
 
-> **О данных:** Набор данных синтетический и создан исключительно для демонстрации возможностей PostgreSQL. Все `seller_id`, `user_id`, названия и временные метки сгенерированы. Проект не использует реальные логи, персональные данные или коммерческую информацию.
+### Таблица `user_actions`
 
-Особенности схемы: `PRIMARY KEY` на `order_id` гарантирует уникальность заказов; `REFERENCES` обеспечивают ссылочную целостность между фактом и измерениями; `NUMERIC(12,2)` и `NUMERIC(10,2)` используются для денежных значений, чтобы избежать ошибок округления `FLOAT`; индексы на `order_dt`, `seller_id`, `region`, `user_id` ускоряют аналитические запросы с фильтрацией и `JOIN`; `city_id` в `sellers` и `users` позволяет анализировать географию продавцов и покупателей независимо от региона доставки; категория товара вынесена только в `products`, так как один продавец может работать в нескольких категориях.
+| Колонка   | Тип         | Описание                          |
+|-----------|-------------|-----------------------------------|
+| action_id | SERIAL      | ID действия (PK)                  |
+| user_id   | INT         | ID покупателя (FK)                |
+| order_id  | INT         | ID заказа (FK, nullable)          |
+| action    | VARCHAR(20) | `create_order` / `cancel_order`   |
+| time      | TIMESTAMP   | Время действия                    |
 
-### Пример данных
+### Таблица `order_items`
 
-Несколько строк из таблицы `orders` для наглядности:
+| Колонка    | Тип | Описание        |
+|------------|-----|-----------------|
+| order_id   | INT | ID заказа (FK)  |
+| product_id | INT | ID товара (FK)  |
+| quantity   | INT | Количество      |
 
-| order_id | order_dt   | seller_id | product_id | user_id | quantity | revenue | region  |
-|----------|------------|-----------|------------|---------|----------|---------|---------|
-| 1001     | 2026-10-02 | 1         | 101        | 501     | 1        | 45000   | Москва  |
-| 1002     | 2026-10-02 | 1         | 102        | 501     | 2        | 16000   | Москва  |
-| 1003     | 2026-10-02 | 2         | 103        | 502     | 3        | 3600    | СПб     |
-| 1004     | 2026-10-02 | 3         | 104        | 503     | 1        | 35000   | Москва  |
-| 1005     | 2026-10-02 | 4         | 105        | 504     | 1        | 60000   | Казань  |
-| 1006     | 2026-10-02 | 5         | 106        | 507     | 2        | 5000    | Новосибирск |
-| 1007     | 2026-10-02 | 1         | 102        | 508     | 1        | 8000    | Москва  |
+> **О данных:** Набор данных синтетический и создан исключительно для демонстрации возможностей PostgreSQL. Все `user_id`, названия и временные метки сгенерированы. Проект не использует реальные логи, персональные данные или коммерческую информацию.
 
 ## 🚀 Запуск проекта
 
@@ -89,27 +71,14 @@
 
 > ⚠️ **Важно:** SQLize.online не сохраняет состояние между отдельными запусками. Каждый `Run` создаёт новую временную базу данных. Поэтому весь код ниже нужно выполнить за один запуск, а не по частям.
 
-### Создание таблиц
+### 1. Создание таблиц
 
 ```sql
--- 1. Создание таблиц
-CREATE TABLE cities (
-    city_id   INT PRIMARY KEY,
-    city_name VARCHAR(50) NOT NULL
-);
-
-CREATE TABLE sellers (
-    seller_id   INT PRIMARY KEY,
-    seller_name VARCHAR(100) NOT NULL,
-    join_dt     DATE NOT NULL,
-    city_id     INT NOT NULL REFERENCES cities(city_id)
-);
-
 CREATE TABLE users (
-    user_id   INT PRIMARY KEY,
-    user_name VARCHAR(100) NOT NULL,
-    reg_dt    DATE NOT NULL,
-    city_id   INT NOT NULL REFERENCES cities(city_id)
+    user_id    INT PRIMARY KEY,
+    user_name  VARCHAR(100) NOT NULL,
+    reg_dt     DATE NOT NULL,
+    city       VARCHAR(50) NOT NULL
 );
 
 CREATE TABLE products (
@@ -120,443 +89,418 @@ CREATE TABLE products (
 );
 
 CREATE TABLE orders (
-    order_id   INT PRIMARY KEY,
-    order_dt   DATE NOT NULL,
-    seller_id  INT NOT NULL REFERENCES sellers(seller_id),
-    product_id INT NOT NULL REFERENCES products(product_id),
-    user_id    INT NOT NULL REFERENCES users(user_id),
-    quantity   INT NOT NULL,
-    revenue    NUMERIC(12,2) NOT NULL,
-    region     VARCHAR(50) NOT NULL
+    order_id      INT PRIMARY KEY,
+    user_id       INT NOT NULL REFERENCES users(user_id),
+    creation_time TIMESTAMP NOT NULL,
+    status        VARCHAR(20) NOT NULL
 );
 
--- 2. Создание индексов
-CREATE INDEX idx_orders_dt     ON orders(order_dt);
-CREATE INDEX idx_orders_seller ON orders(seller_id);
-CREATE INDEX idx_orders_region ON orders(region);
-CREATE INDEX idx_orders_user   ON orders(user_id);
-CREATE INDEX idx_sellers_city  ON sellers(city_id);
-CREATE INDEX idx_users_city    ON users(city_id);
+CREATE TABLE user_actions (
+    action_id  SERIAL PRIMARY KEY,
+    user_id    INT NOT NULL REFERENCES users(user_id),
+    order_id   INT REFERENCES orders(order_id),
+    action     VARCHAR(20) NOT NULL,
+    time       TIMESTAMP NOT NULL
+);
 
--- 3. Добавление данных
-INSERT INTO cities VALUES
-(1, 'Москва'),
-(2, 'Санкт-Петербург'),
-(3, 'Казань'),
-(4, 'Новосибирск'),
-(5, 'Екатеринбург');
+CREATE TABLE order_items (
+    order_id   INT NOT NULL REFERENCES orders(order_id),
+    product_id INT NOT NULL REFERENCES products(product_id),
+    quantity   INT NOT NULL DEFAULT 1,
+    PRIMARY KEY (order_id, product_id)
+);
 
-INSERT INTO sellers VALUES
-(1, 'TechStore', '2025-01-15', 1),
-(2, 'BookWorld', '2025-02-01', 2),
-(3, 'HomeStyle', '2025-01-20', 1),
-(4, 'SportLife', '2025-03-10', 3),
-(5, 'KidsToys',  '2025-02-15', 4);
-
-INSERT INTO users VALUES
-(501, 'Иван Петров',      '2025-01-10', 1),
-(502, 'Анна Смирнова',    '2025-02-12', 2),
-(503, 'Олег Кузнецов',    '2025-01-25', 1),
-(504, 'Мария Иванова',    '2025-03-01', 3),
-(505, 'Дмитрий Соколов',  '2025-02-18', 2),
-(506, 'Елена Попова',     '2025-01-30', 1),
-(507, 'Сергей Лебедев',   '2025-03-05', 4),
-(508, 'Наталья Козлова',  '2025-02-22', 3),
-(509, 'Артем Новиков',    '2025-03-12', 5);
-
-INSERT INTO products VALUES
-(101, 'Смартфон X',        'Электроника',     45000),
-(102, 'Наушники Y',        'Электроника',      8000),
-(103, 'Книга "Аналитика"', 'Книги',             1200),
-(104, 'Кофемашина Z',      'Дом',              35000),
-(105, 'Беговая дорожка',   'Спорт',            60000),
-(106, 'Конструктор',       'Детские товары',    2500);
-
-INSERT INTO orders VALUES
-(1001, DATE '2026-10-02', 1, 101, 501, 1, 45000, 'Москва'),
-(1002, DATE '2026-10-02', 1, 102, 501, 2, 16000, 'Москва'),
-(1003, DATE '2026-10-02', 2, 103, 502, 3,  3600, 'СПб'),
-(1004, DATE '2026-10-02', 3, 104, 503, 1, 35000, 'Москва'),
-(1005, DATE '2026-10-02', 4, 105, 504, 1, 60000, 'Казань'),
-(1006, DATE '2026-10-02', 5, 106, 507, 2,  5000, 'Новосибирск'),
-(1007, DATE '2026-10-02', 1, 102, 508, 1,  8000, 'Москва'),
-(1008, DATE '2026-10-03', 1, 101, 501, 1, 45000, 'Москва'),
-(1009, DATE '2026-10-03', 2, 103, 502, 5,  6000, 'СПб'),
-(1010, DATE '2026-10-03', 3, 104, 503, 2, 70000, 'СПб'),
-(1011, DATE '2026-10-03', 4, 105, 504, 1, 60000, 'Москва'),
-(1012, DATE '2026-10-03', 5, 106, 505, 3,  7500, 'Москва'),
-(1013, DATE '2026-10-03', 1, 102, 506, 1,  8000, 'Москва'),
-(1014, DATE '2026-10-03', 2, 103, 509, 2,  2400, 'СПб'),
-(1015, DATE '2026-10-04', 1, 101, 501, 1, 45000, 'Москва'),
-(1016, DATE '2026-10-04', 1, 102, 502, 1,  8000, 'СПб'),
-(1017, DATE '2026-10-04', 3, 104, 504, 1, 35000, 'Казань'),
-(1018, DATE '2026-10-04', 4, 105, 504, 1, 60000, 'Москва'),
-(1019, DATE '2026-10-04', 5, 106, 505, 2,  5000, 'Москва'),
-(1020, DATE '2026-10-04', 2, 103, 506, 3,  3600, 'Москва'),
-(1021, DATE '2026-10-04', 1, 101, 507, 1, 45000, 'Новосибирск'),
-(1022, DATE '2026-10-04', 3, 104, 508, 1, 35000, 'Москва'),
-(1023, DATE '2026-10-05', 1, 101, 501, 1, 45000, 'Москва'),
-(1024, DATE '2026-10-05', 2, 103, 502, 4,  4800, 'СПб'),
-(1025, DATE '2026-10-05', 3, 104, 503, 1, 35000, 'Москва'),
-(1026, DATE '2026-10-05', 4, 105, 504, 1, 60000, 'Казань'),
-(1027, DATE '2026-10-05', 5, 106, 505, 3,  7500, 'Москва'),
-(1028, DATE '2026-10-05', 1, 102, 506, 2, 16000, 'Москва'),
-(1029, DATE '2026-10-05', 2, 103, 507, 5,  6000, 'Новосибирск'),
-(1030, DATE '2026-10-05', 4, 105, 508, 1, 60000, 'Москва'),
-(1031, DATE '2026-10-05', 5, 106, 509, 2,  5000, 'СПб'),
-(1032, DATE '2026-10-06', 1, 101, 501, 1, 45000, 'Москва'),
-(1033, DATE '2026-10-06', 1, 102, 502, 1,  8000, 'СПб'),
-(1034, DATE '2026-10-06', 3, 104, 503, 2, 70000, 'СПб'),
-(1035, DATE '2026-10-06', 4, 105, 504, 1, 60000, 'Москва'),
-(1036, DATE '2026-10-06', 5, 106, 505, 1,  2500, 'Москва'),
-(1037, DATE '2026-10-06', 2, 103, 506, 3,  3600, 'Москва'),
-(1038, DATE '2026-10-06', 1, 101, 507, 1, 45000, 'Новосибирск'),
-(1039, DATE '2026-10-06', 3, 104, 508, 1, 35000, 'Москва'),
-(1040, DATE '2026-10-06', 4, 105, 509, 1, 60000, 'СПб'),
-(1041, DATE '2026-10-07', 1, 101, 501, 1, 45000, 'Москва'),
-(1042, DATE '2026-10-07', 2, 103, 502, 2,  2400, 'СПб'),
-(1043, DATE '2026-10-07', 3, 104, 503, 1, 35000, 'Москва'),
-(1044, DATE '2026-10-07', 4, 105, 504, 1, 60000, 'Казань'),
-(1045, DATE '2026-10-07', 5, 106, 505, 2,  5000, 'Москва'),
-(1046, DATE '2026-10-07', 1, 102, 506, 1,  8000, 'Москва'),
-(1047, DATE '2026-10-07', 2, 103, 507, 3,  3600, 'Новосибирск'),
-(1048, DATE '2026-10-07', 3, 104, 508, 2, 70000, 'Москва'),
-(1049, DATE '2026-10-07', 4, 105, 509, 1, 60000, 'СПб'),
-(1050, DATE '2026-10-08', 1, 101, 501, 1, 45000, 'Москва'),
-(1051, DATE '2026-10-08', 1, 102, 502, 1,  8000, 'СПб'),
-(1052, DATE '2026-10-08', 2, 103, 503, 2,  2400, 'Москва'),
-(1053, DATE '2026-10-08', 3, 104, 504, 1, 35000, 'Казань'),
-(1054, DATE '2026-10-08', 4, 105, 505, 1, 60000, 'Москва'),
-(1055, DATE '2026-10-08', 5, 106, 506, 3,  7500, 'Москва'),
-(1056, DATE '2026-10-08', 1, 101, 507, 1, 45000, 'Новосибирск'),
-(1057, DATE '2026-10-08', 2, 103, 508, 2,  2400, 'Москва'),
-(1058, DATE '2026-10-08', 3, 104, 509, 1, 35000, 'СПб'),
-(1059, DATE '2026-10-08', 4, 105, 501, 1, 60000, 'Москва'),
-(1060, DATE '2026-10-08', 5, 106, 502, 2,  5000, 'СПб');
+CREATE INDEX idx_actions_time ON user_actions(time);
+CREATE INDEX idx_actions_user ON user_actions(user_id);
+CREATE INDEX idx_orders_time  ON orders(creation_time);
+CREATE INDEX idx_orders_user  ON orders(user_id);
 ```
 
-## 📈 Аналитические запросы
+### 2. Генерация данных
 
-### 1. GMV, количество заказов и покупателей
 ```sql
+-- Пользователи
+INSERT INTO users (user_id, user_name, reg_dt, city)
 SELECT
-    SUM(revenue)              AS gmv,
-    COUNT(DISTINCT order_id)  AS orders_count,
-    COUNT(DISTINCT user_id)   AS buyers_count
-FROM orders;
-```
-**Результат:**
-| gmv        | orders_count | buyers_count |
-|------------|--------------|--------------|
-| 1770800.00 | 60           | 9            |
+    g AS user_id,
+    'User_' || g,
+    DATE '2024-01-01' + (random() * 180)::int,
+    (ARRAY['Москва','СПб','Казань','Новосибирск','Екатеринбург'])[1 + (random()*4)::int]
+FROM generate_series(1, 300) AS g;
 
-> **Бизнес-смысл:** базовая метрика объёма продаж на маркетплейсе. По нему оценивают динамику всего бизнеса.
-
-### 2. Топ продавцов по выручке (с городом)
-```sql
+-- Товары
+INSERT INTO products (product_id, product_name, category, price)
 SELECT
-    s.seller_id,
-    s.seller_name,
-    c.city_name,
-    SUM(o.revenue)              AS total_revenue,
-    COUNT(DISTINCT o.order_id)  AS orders_cnt,
-    ROUND(AVG(o.revenue), 2)    AS avg_order_value
-FROM orders o
-JOIN sellers s ON o.seller_id = s.seller_id
-JOIN cities  c ON s.city_id   = c.city_id
-GROUP BY s.seller_id, s.seller_name, c.city_name
-ORDER BY total_revenue DESC
-LIMIT 5;
-```
-**Результат:**
-| seller_id | seller_name | city_name       | total_revenue | orders_cnt | avg_order_value |
-|-----------|-------------|-----------------|---------------|------------|-----------------|
-| 4         | SportLife   | Казань          | 660000.00     | 11         | 60000.00        |
-| 1         | TechStore   | Москва          | 530000.00     | 18         | 29444.44        |
-| 3         | HomeStyle   | Москва          | 490000.00     | 11         | 44545.45        |
-| 5         | KidsToys    | Новосибирск     | 50000.00      | 9          | 5555.56         |
-| 2         | BookWorld   | Санкт-Петербург | 40800.00      | 11         | 3709.09         |
+    g,
+    'Product_' || g,
+    (ARRAY['Электроника','Книги','Дом','Спорт','Детское'])[1 + (random()*4)::int],
+    (ARRAY[500, 1200, 2500, 8000, 15000, 35000, 45000, 60000])[1 + (random()*7)::int]
+FROM generate_series(1, 50) AS g;
 
-> **Бизнес-смысл:** рейтинг продавцов — основа для программ лояльности, скидок на комиссию и приоритета в выдаче. Город продавца помогает понять географию предложения.
-
-### 3. Выручка по регионам доставки
-```sql
-SELECT
-    region,
-    SUM(revenue)              AS revenue,
-    COUNT(DISTINCT order_id)  AS orders_cnt,
-    COUNT(DISTINCT user_id)   AS buyers
-FROM orders
-GROUP BY region
-ORDER BY revenue DESC;
-```
-**Результат:**
-| region      | revenue    | orders_cnt | buyers |
-|-------------|------------|------------|--------|
-| Москва      | 1023000.00 | 34         | 6      |
-| СПб         | 348200.00  | 15         | 3      |
-| Казань      | 250000.00  | 5          | 1      |
-| Новосибирск | 149600.00  | 6          | 1      |
-
-> **Бизнес-смысл:** распределение выручки по регионам доставки — база для логистики, региональных промо и планирования складов.
-
-### 4. Динамика GMV по дням с накопительным итогом
-```sql
-SELECT
-    order_dt,
-    SUM(revenue) AS daily_gmv,
-    COUNT(DISTINCT order_id) AS daily_orders,
-    SUM(SUM(revenue)) OVER (ORDER BY order_dt) AS cumulative_gmv
-FROM orders
-GROUP BY order_dt
-ORDER BY order_dt;
-```
-**Результат:**
-| order_dt   | daily_gmv | daily_orders | cumulative_gmv |
-|------------|-----------|--------------|----------------|
-| 2026-10-02 | 172600.00 | 7            | 172600.00      |
-| 2026-10-03 | 198900.00 | 7            | 371500.00      |
-| 2026-10-04 | 236600.00 | 8            | 608100.00      |
-| 2026-10-05 | 239300.00 | 9            | 847400.00      |
-| 2026-10-06 | 329100.00 | 9            | 1176500.00     |
-| 2026-10-07 | 289000.00 | 9            | 1465500.00     |
-| 2026-10-08 | 305300.00 | 11           | 1770800.00     |
-
-> **Бизнес-смысл:** ежедневная динамика и накопленный GMV — инструмент для отслеживания трендов и сезонности.
-
-### 5. Retention покупателей (активные дни, с городом)
-```sql
-SELECT
-    u.user_id,
-    u.user_name,
-    c.city_name,
-    COUNT(DISTINCT o.order_dt) AS active_days,
-    MIN(o.order_dt)            AS first_order,
-    MAX(o.order_dt)            AS last_order,
-    SUM(o.revenue)             AS lifetime_revenue
-FROM orders o
-JOIN users  u ON o.user_id = u.user_id
-JOIN cities c ON u.city_id = c.city_id
-GROUP BY u.user_id, u.user_name, c.city_name
-HAVING COUNT(DISTINCT o.order_dt) > 1
-ORDER BY active_days DESC, lifetime_revenue DESC;
-```
-**Результат:**
-| user_id | user_name       | city_name       | active_days | first_order | last_order | lifetime_revenue |
-|---------|-----------------|-----------------|-------------|-------------|------------|------------------|
-| 504     | Мария Иванова   | Казань          | 7           | 2026-10-02  | 2026-10-08 | 430000.00        |
-| 501     | Иван Петров     | Москва          | 7           | 2026-10-02  | 2026-10-08 | 391000.00        |
-| 502     | Анна Смирнова   | Санкт-Петербург | 7           | 2026-10-02  | 2026-10-08 | 45800.00         |
-| 503     | Олег Кузнецов   | Москва          | 6           | 2026-10-02  | 2026-10-08 | 247400.00        |
-| 508     | Наталья Козлова | Казань          | 6           | 2026-10-02  | 2026-10-08 | 210400.00        |
-| 507     | Сергей Лебедев  | Новосибирск     | 6           | 2026-10-02  | 2026-10-08 | 149600.00        |
-| 505     | Дмитрий Соколов | Санкт-Петербург | 6           | 2026-10-03  | 2026-10-08 | 87500.00         |
-| 506     | Елена Попова    | Москва          | 6           | 2026-10-03  | 2026-10-08 | 46700.00         |
-| 509     | Артем Новиков   | Екатеринбург    | 5           | 2026-10-03  | 2026-10-08 | 162400.00        |
-
-> **Бизнес-смысл:** retention — ключевая метрика удержания. Показывает, сколько дней покупатель возвращался. LTV (lifetime_revenue) помогает оценить ценность клиента.
-
-### 6. Средний чек по регионам доставки
-```sql
-SELECT
-    region,
-    ROUND(SUM(revenue) / COUNT(DISTINCT order_id), 2) AS avg_order_value,
-    ROUND(AVG(revenue), 2) AS avg_line_value
-FROM orders
-GROUP BY region
-ORDER BY avg_order_value DESC;
-```
-**Результат:**
-| region      | avg_order_value | avg_line_value |
-|-------------|-----------------|----------------|
-| Казань      | 50000.00        | 50000.00       |
-| Москва      | 30088.24        | 30088.24       |
-| Новосибирск | 24933.33        | 24933.33       |
-| СПб         | 23213.33        | 23213.33       |
-
-> **Бизнес-смысл:** средний чек по регионам — индикатор платёжеспособности и потребительского поведения. Используется для таргетинга промо.
-
-### 7. Разбивка заказов по регионам доставки через FILTER
-```sql
-SELECT
-    s.seller_id,
-    s.seller_name,
-    COUNT(*) FILTER (WHERE o.region = 'Москва') AS orders_msk,
-    COUNT(*) FILTER (WHERE o.region = 'СПб')    AS orders_spb,
-    COUNT(*) FILTER (WHERE o.region NOT IN ('Москва', 'СПб')) AS orders_other
-FROM orders o
-JOIN sellers s ON o.seller_id = s.seller_id
-GROUP BY s.seller_id, s.seller_name
-ORDER BY s.seller_id;
-```
-**Результат:**
-| seller_id | seller_name | orders_msk | orders_spb | orders_other |
-|-----------|-------------|------------|------------|--------------|
-| 1         | TechStore   | 12         | 3          | 3            |
-| 2         | BookWorld   | 4          | 5          | 2            |
-| 3         | HomeStyle   | 6          | 3          | 2            |
-| 4         | SportLife   | 6          | 2          | 3            |
-| 5         | KidsToys    | 6          | 2          | 1            |
-
-> **Бизнес-смысл:** условные агрегации через `FILTER` позволяют в одном запросе разбить заказы по ключевым регионам. Удобно для дашбордов.
-
-### 8. Ранжирование продавцов внутри категорий товаров
-```sql
-WITH seller_revenue AS (
+-- Заказы
+WITH raw AS (
     SELECT
-        p.category,
-        s.seller_id,
-        s.seller_name,
-        c.city_name,
-        SUM(o.revenue) AS total_revenue
+        g AS order_id,
+        1 + (random() * 299)::int AS user_id,
+        TIMESTAMP '2024-01-01'
+            + (random() * 180)::int * INTERVAL '1 day'
+            + (random() * 86400)::int * INTERVAL '1 second' AS creation_time,
+        (random() < 0.10) AS is_canceled
+    FROM generate_series(1, 3000) AS g
+)
+INSERT INTO orders (order_id, user_id, creation_time, status)
+SELECT
+    order_id,
+    user_id,
+    creation_time,
+    CASE WHEN is_canceled THEN 'canceled' ELSE 'created' END
+FROM raw
+WHERE creation_time >= (SELECT reg_dt FROM users u WHERE u.user_id = raw.user_id)::timestamp;
+
+-- Действия: create_order
+INSERT INTO user_actions (user_id, order_id, action, time)
+SELECT user_id, order_id, 'create_order', creation_time
+FROM orders;
+
+-- Действия: cancel_order
+INSERT INTO user_actions (user_id, order_id, action, time)
+SELECT user_id, order_id, 'cancel_order', creation_time + INTERVAL '1 hour'
+FROM orders
+WHERE status = 'canceled';
+
+-- Позиции заказов
+INSERT INTO order_items (order_id, product_id, quantity)
+SELECT
+    o.order_id,
+    1 + (random() * 49)::int,
+    1 + (random() * 2)::int
+FROM orders o
+CROSS JOIN generate_series(1, 1 + (random() * 2)::int) AS g
+ON CONFLICT DO NOTHING;
+```
+
+---
+
+## 📈 Метрики
+
+### 1. DAU
+
+```sql
+SELECT
+    time::date AS date,
+    COUNT(DISTINCT user_id) AS dau
+FROM user_actions
+GROUP BY date
+ORDER BY date;
+```
+
+> **Бизнес-смысл:** базовая метрика вовлечённости. Показывает, сколько уникальных пользователей заходят в продукт каждый день.
+
+### 2. WAU — по календарным неделям
+
+```sql
+SELECT
+    date_trunc('week', time) AS week,
+    COUNT(DISTINCT user_id)  AS wau
+FROM user_actions
+GROUP BY week
+ORDER BY week;
+```
+
+С числом активных дней (видно неполные недели):
+
+```sql
+SELECT
+    date_trunc('week', time)::date AS week,
+    COUNT(DISTINCT user_id)        AS wau,
+    COUNT(DISTINCT time::date)     AS active_days
+FROM user_actions
+GROUP BY week
+ORDER BY week;
+```
+
+> **Бизнес-смысл:** `date_trunc('week', ...)` в PostgreSQL начинает неделю с понедельника (ISO 8601). Если `active_days < 7` — неделя неполная (первая или последняя в данных), WAU на ней занижен.
+
+### 3. MAU — по календарным месяцам
+
+```sql
+SELECT
+    date_trunc('month', time)::date AS month,
+    COUNT(DISTINCT user_id)         AS mau
+FROM user_actions
+GROUP BY month
+ORDER BY month;
+```
+
+> **Бизнес-смысл:** MAU показывает широту аудитории. Вместе с WAU и DAU используется для оценки «липкости» продукта.
+
+### 4. ARPU / ARPPU
+
+```sql
+WITH daily_revenue AS (
+    SELECT
+        o.creation_time::date AS date,
+        COUNT(DISTINCT o.order_id) AS orders,
+        COUNT(DISTINCT o.user_id)  AS paying_users,
+        SUM(p.price * oi.quantity) AS revenue
     FROM orders o
-    JOIN sellers  s ON o.seller_id  = s.seller_id
-    JOIN products p ON o.product_id = p.product_id
-    JOIN cities   c ON s.city_id    = c.city_id
-    GROUP BY p.category, s.seller_id, s.seller_name, c.city_name
+    JOIN order_items oi ON oi.order_id = o.order_id
+    JOIN products p     ON p.product_id = oi.product_id
+    WHERE o.order_id NOT IN (
+        SELECT order_id FROM user_actions WHERE action = 'cancel_order'
+    )
+    GROUP BY 1
+),
+daily_users AS (
+    SELECT time::date AS date, COUNT(DISTINCT user_id) AS users
+    FROM user_actions
+    GROUP BY 1
 )
 SELECT
-    category,
-    seller_id,
-    seller_name,
-    city_name,
-    total_revenue,
-    RANK() OVER (PARTITION BY category ORDER BY total_revenue DESC) AS rank_in_category
-FROM seller_revenue
-ORDER BY category, rank_in_category;
+    r.date,
+    ROUND(r.revenue::decimal / NULLIF(u.users, 0), 2)        AS arpu,
+    ROUND(r.revenue::decimal / NULLIF(r.paying_users, 0), 2) AS arppu
+FROM daily_revenue r
+LEFT JOIN daily_users u USING (date)
+ORDER BY r.date;
 ```
-**Результат:**
-| category       | seller_id | seller_name | city_name       | total_revenue | rank_in_category |
-|----------------|-----------|-------------|-----------------|---------------|------------------|
-| Детские товары | 5         | KidsToys    | Новосибирск     | 50000.00      | 1                |
-| Дом            | 3         | HomeStyle   | Москва          | 490000.00     | 1                |
-| Книги          | 2         | BookWorld   | Санкт-Петербург | 40800.00      | 1                |
-| Спорт          | 4         | SportLife   | Казань          | 660000.00     | 1                |
-| Электроника    | 1         | TechStore   | Москва          | 530000.00     | 1                |
 
-> **Бизнес-смысл:** рейтинг продавцов внутри категории — основа для категорийного менеджмента.
+> **Бизнес-смысл:** ARPU — выручка на всех активных, ARPPU — на платящих. Отменённые заказы исключаются.
 
-### 9. Топ товаров по выручке
+### 5. CR (Conversion Rate)
+
+```sql
+WITH daily_active AS (
+    SELECT time::date AS date, COUNT(DISTINCT user_id) AS active_users
+    FROM user_actions
+    GROUP BY 1
+),
+daily_buyers AS (
+    SELECT
+        time::date AS date,
+        COUNT(DISTINCT user_id) AS buyers
+    FROM user_actions
+    WHERE action = 'create_order'
+      AND order_id NOT IN (
+          SELECT order_id FROM user_actions WHERE action = 'cancel_order'
+      )
+    GROUP BY 1
+)
+SELECT
+    a.date,
+    a.active_users,
+    COALESCE(b.buyers, 0) AS buyers,
+    ROUND(COALESCE(b.buyers, 0)::decimal / NULLIF(a.active_users, 0), 4) AS cr
+FROM daily_active a
+LEFT JOIN daily_buyers b USING (date)
+ORDER BY a.date;
+```
+
+> **Бизнес-смысл:** CR — доля активных пользователей, совершивших покупку. Отменённые заказы исключаются.
+
+### 6. Retention — базовый запрос
+
 ```sql
 SELECT
-    p.product_id,
-    p.product_name,
-    p.category,
-    SUM(o.quantity)  AS total_qty,
-    SUM(o.revenue)   AS total_revenue
-FROM orders o
-JOIN products p ON o.product_id = p.product_id
-GROUP BY p.product_id, p.product_name, p.category
-ORDER BY total_revenue DESC
-LIMIT 5;
+    date_trunc('month', start_date)::date AS start_month,
+    start_date,
+    date - start_date AS day_number,
+    users,
+    ROUND(
+        users::decimal / MAX(users) OVER (PARTITION BY start_date),
+        2
+    ) AS retention
+FROM (
+    SELECT
+        start_date,
+        time::date AS date,
+        COUNT(DISTINCT user_id) AS users
+    FROM (
+        SELECT
+            user_id,
+            time::date,
+            MIN(time::date) OVER (PARTITION BY user_id) AS start_date
+        FROM user_actions
+    ) t1
+    GROUP BY start_date, time::date
+) t2
+ORDER BY start_date, day_number;
 ```
-**Результат:**
-| product_id | product_name    | category       | total_qty | total_revenue |
-|------------|-----------------|----------------|-----------|---------------|
-| 105        | Беговая дорожка | Спорт          | 11        | 660000.00     |
-| 104        | Кофемашина Z    | Дом            | 14        | 490000.00     |
-| 101        | Смартфон X      | Электроника    | 10        | 450000.00     |
-| 102        | Наушники Y      | Электроника    | 10        | 80000.00      |
-| 106        | Конструктор     | Детские товары | 20        | 50000.00      |
 
-> **Бизнес-смысл:** топ товаров — база для управления ассортиментом, промо и запасами. Помогает понять, что «вытягивает» выручку.
+> **Бизнес-смысл:** retention — ключевая метрика удержания. Показывает, сколько пользователей из когорты возвращаются через N дней.
 
-### 10. География: покупатели и продавцы по городам
+### 7. Retention-матрица — дневная
+
 ```sql
 SELECT
-    c.city_id,
-    c.city_name,
-    COUNT(DISTINCT s.seller_id) AS sellers_cnt,
-    COUNT(DISTINCT u.user_id)   AS buyers_cnt
-FROM cities c
-LEFT JOIN sellers s ON s.city_id = c.city_id
-LEFT JOIN users   u ON u.city_id = c.city_id
-GROUP BY c.city_id, c.city_name
-ORDER BY sellers_cnt DESC, buyers_cnt DESC;
+    start_date,
+    MAX(CASE WHEN day_number = 0  THEN retention END) AS d0,
+    MAX(CASE WHEN day_number = 1  THEN retention END) AS d1,
+    MAX(CASE WHEN day_number = 2  THEN retention END) AS d2,
+    MAX(CASE WHEN day_number = 3  THEN retention END) AS d3,
+    MAX(CASE WHEN day_number = 4  THEN retention END) AS d4,
+    MAX(CASE WHEN day_number = 5  THEN retention END) AS d5,
+    MAX(CASE WHEN day_number = 6  THEN retention END) AS d6,
+    MAX(CASE WHEN day_number = 7  THEN retention END) AS d7,
+    MAX(CASE WHEN day_number = 14 THEN retention END) AS d14,
+    MAX(CASE WHEN day_number = 30 THEN retention END) AS d30
+FROM (
+    SELECT
+        start_date,
+        date - start_date AS day_number,
+        ROUND(
+            users::decimal / MAX(users) OVER (PARTITION BY start_date),
+            2
+        ) AS retention
+    FROM (
+        SELECT
+            start_date,
+            time::date AS date,
+            COUNT(DISTINCT user_id) AS users
+        FROM (
+            SELECT
+                user_id,
+                time::date,
+                MIN(time::date) OVER (PARTITION BY user_id) AS start_date
+            FROM user_actions
+        ) t1
+        GROUP BY start_date, time::date
+    ) t2
+) t3
+GROUP BY start_date
+ORDER BY start_date;
 ```
-**Результат:**
-| city_id | city_name       | sellers_cnt | buyers_cnt |
-|---------|-----------------|-------------|------------|
-| 1       | Москва          | 2           | 3          |
-| 2       | Санкт-Петербург | 1           | 2          |
-| 3       | Казань          | 1           | 2          |
-| 4       | Новосибирск     | 1           | 1          |
-| 5       | Екатеринбург    | 0           | 1          |
 
-> **Бизнес-смысл:** сравнение предложения (продавцы) и спроса (покупатели) по городам. Помогает найти города с дефицитом продавцов — точки роста.
+> **Бизнес-смысл:** матрица позволяет сравнивать когорты между собой. `d0` всегда 1.00, `NULL` — в этот день никто не вернулся.
 
-### 11. Продавцы и их покупатели из одного города
+### 8. Retention-матрица — недельная
+
 ```sql
 SELECT
-    s.seller_id,
-    s.seller_name,
-    c.city_name,
-    COUNT(DISTINCT o.user_id) AS buyers_from_same_city
-FROM orders o
-JOIN sellers s ON o.seller_id = s.seller_id
-JOIN users   u ON o.user_id   = u.user_id
-JOIN cities  c ON s.city_id   = c.city_id
-WHERE s.city_id = u.city_id
-GROUP BY s.seller_id, s.seller_name, c.city_name
-ORDER BY buyers_from_same_city DESC;
+    start_date,
+    MAX(CASE WHEN week_number = 0 THEN retention END) AS w0,
+    MAX(CASE WHEN week_number = 1 THEN retention END) AS w1,
+    MAX(CASE WHEN week_number = 2 THEN retention END) AS w2,
+    MAX(CASE WHEN week_number = 3 THEN retention END) AS w3,
+    MAX(CASE WHEN week_number = 4 THEN retention END) AS w4,
+    MAX(CASE WHEN week_number = 5 THEN retention END) AS w5,
+    MAX(CASE WHEN week_number = 6 THEN retention END) AS w6,
+    MAX(CASE WHEN week_number = 7 THEN retention END) AS w7
+FROM (
+    SELECT
+        start_date,
+        (date - start_date) / 7 AS week_number,
+        ROUND(
+            users::decimal / MAX(users) OVER (PARTITION BY start_date),
+            2
+        ) AS retention
+    FROM (
+        SELECT
+            start_date,
+            time::date AS date,
+            COUNT(DISTINCT user_id) AS users
+        FROM (
+            SELECT
+                user_id,
+                time::date,
+                MIN(time::date) OVER (PARTITION BY user_id) AS start_date
+            FROM user_actions
+        ) t1
+        GROUP BY start_date, time::date
+    ) t2
+) t3
+GROUP BY start_date
+ORDER BY start_date;
 ```
-**Результат:**
-| seller_id | seller_name | city_name       | buyers_from_same_city |
-|-----------|-------------|-----------------|-----------------------|
-| 1         | TechStore   | Москва          | 2                     |
-| 4         | SportLife   | Казань          | 2                     |
-| 2         | BookWorld   | Санкт-Петербург | 1                     |
-| 3         | HomeStyle   | Москва          | 1                     |
-| 5         | KidsToys    | Новосибирск     | 1                     |
 
-> **Бизнес-смысл:** показывает, как часто покупатели заказывают у продавцов из своего города. Важно для логистики (быстрая доставка) и локальных промо.
+> **Бизнес-смысл:** недельный шаг сглаживает шум и удобен, если ежедневные когорты слишком мелкие.
 
-### 12. Оптимизация: EXPLAIN ANALYZE
+### 9. Retention-матрица — месячная
+
+```sql
+SELECT
+    start_date,
+    MAX(CASE WHEN month_number = 0 THEN retention END) AS m0,
+    MAX(CASE WHEN month_number = 1 THEN retention END) AS m1,
+    MAX(CASE WHEN month_number = 2 THEN retention END) AS m2,
+    MAX(CASE WHEN month_number = 3 THEN retention END) AS m3,
+    MAX(CASE WHEN month_number = 4 THEN retention END) AS m4,
+    MAX(CASE WHEN month_number = 5 THEN retention END) AS m5
+FROM (
+    SELECT
+        start_date,
+        (
+            (EXTRACT(YEAR  FROM date) - EXTRACT(YEAR  FROM start_date)) * 12
+          + (EXTRACT(MONTH FROM date) - EXTRACT(MONTH FROM start_date))
+        ) AS month_number,
+        ROUND(
+            users::decimal / MAX(users) OVER (PARTITION BY start_date),
+            2
+        ) AS retention
+    FROM (
+        SELECT
+            start_date,
+            time::date AS date,
+            COUNT(DISTINCT user_id) AS users
+        FROM (
+            SELECT
+                user_id,
+                time::date,
+                MIN(time::date) OVER (PARTITION BY user_id) AS start_date
+            FROM user_actions
+        ) t1
+        GROUP BY start_date, time::date
+    ) t2
+) t3
+GROUP BY start_date
+ORDER BY start_date;
+```
+
+> **Бизнес-смысл:** месячная матрица — классический формат для отчётов по удержанию. `m0` — месяц первого появления, `m1` — следующий и т.д.
+
+---
+
+## 🔍 EXPLAIN ANALYZE
+
+`EXPLAIN ANALYZE` показывает план выполнения запроса и реальное время по каждому шагу. Помогает понять, где запрос тормозит и используется ли индекс.
+
 ```sql
 EXPLAIN ANALYZE
-SELECT region, SUM(revenue)
-FROM orders
-WHERE order_dt >= DATE '2026-10-05'
-GROUP BY region;
+SELECT
+    date_trunc('week', time) AS week,
+    COUNT(DISTINCT user_id)  AS wau
+FROM user_actions
+GROUP BY week;
 ```
-**Результат (план запроса):**
-| QUERY PLAN                                                                                                    |
-|---------------------------------------------------------------------------------------------------------------|
-| HashAggregate  (cost=16.09..17.54 rows=116 width=150) (actual time=0.069..0.072 rows=4.00 loops=1)            |
-|   Group Key: region                                                                                           |
-|   Batches: 1  Memory Usage: 32kB                                                                              |
-|   Buffers: shared hit=1                                                                                       |
-|   ->  Seq Scan on orders  (cost=0.00..15.38 rows=143 width=134) (actual time=0.030..0.035 rows=38.00 loops=1) |
-|         Filter: (order_dt >= '2026-10-05'::date)                                                              |
-|         Rows Removed by Filter: 22                                                                            |
-|         Buffers: shared hit=1                                                                                 |
-| Planning:                                                                                                     |
-|   Buffers: shared hit=3                                                                                       |
-| Planning Time: 0.275 ms                                                                                       |
-| Execution Time: 0.146 ms                                                                                      |
 
+Что смотреть в выводе:
 
-> **Бизнес-смысл:** демонстрация понимания планов запросов. На таблице из 60 строк оптимизатор выбирает `Seq Scan`, потому что последовательное чтение дешевле, чем доступ через индекс. Это нормальное поведение планировщика: **индекс используется только тогда, когда он реально быстрее**. На реальных объёмах (миллионы заказов) при таком же запросе PostgreSQL выберет `Index Scan` по `idx_orders_dt` — именно для этого индекс и создавался. Проверить это можно, временно отключив `Seq Scan` через `SET enable_seqscan = off` перед запросом.
+- **`Seq Scan`** — чтение всей таблицы. На маленьких таблицах это нормально и быстрее индекса.
+- **`Index Scan`** — чтение через индекс. Появляется на больших объёмах, если индекс есть.
+- **`actual time=...`** — реальное время шага.
+- **`rows=...`** — сколько строк прошло через шаг.
 
-## 📁 Структура проекта
+Проверить, что индекс рабочий, можно так:
 
+```sql
+SET enable_seqscan = off;
+EXPLAIN ANALYZE
+SELECT date_trunc('week', time) AS week, COUNT(DISTINCT user_id) AS wau
+FROM user_actions
+GROUP BY week;
+SET enable_seqscan = on;
 ```
-postgresql-marketplace-analytics/
-├── README.md
-├── schema.sql        # CREATE TABLE + индексы
-├── insert_data.sql   # INSERT
-└── queries.sql       # аналитические запросы
-```
+
+В плане появится `Index Scan` по `idx_actions_time` — значит, индекс существует и может быть использован.
 
 ## 📌 Что демонстрирует проект
 
-- Понимание разницы между OLTP и OLAP (PostgreSQL vs ClickHouse).
-- Навык проектирования нормализованной реляционной схемы под аналитические нагрузки (факт + измерения, PK/FK, справочник городов).
+- Навык проектирования нормализованной реляционной схемы под аналитические нагрузки (факт + измерения, PK/FK).
 - Умение писать аналитические запросы на PostgreSQL: оконные функции, CTE, `FILTER`, множественные `JOIN`.
 - Знание оптимизаций: индексы, `EXPLAIN ANALYZE`, понимание планов запросов.
 - Понимание важности группировки по ID, а не по именам.
-- Работа с продуктовыми метриками маркетплейса: GMV, топ продавцов, retention, средний чек, география продавцов и покупателей.
+- Работа с продуктовыми метриками маркетплейса: DAU, WAU, MAU, ARPU, ARPPU, CR, retention (дневной, недельный, месячный).
 
 ## 🔗 Интерактивная демонстрация
 
-[Открыть в SQLize.online — PostgreSQL](https://sqlize.online/sql/psql18/5dded27cc226a54fda3d8ee935ebf8b3/)
+[Открыть в SQLize.online — PostgreSQL](https://sqlize.online/sql/psql/)
