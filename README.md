@@ -739,6 +739,6 @@ postgresql-product-analytics/
 - Когортный анализ: матрицы retention по дням, неделям, месяцам.
 - Умение интерпретировать результаты и формулировать продуктовые инсайты.
 
+## 🔗 Интерактивная демонстрация
 
-
-https://sqlize.online/sql/psql18/76d86749e983a8eb9f3bcab674739fd6/
+[Открыть в SQLize.online — PostgreSQL](https://sqlize.online/sql/psql18/76d86749e983a8eb9f3bcab674739fd6/)
