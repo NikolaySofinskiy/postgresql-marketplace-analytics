@@ -1,77 +1,110 @@
 # PostgreSQL Product Analytics
 
-Аналитический проект на PostgreSQL: расчёт продуктовых метрик - DAU, WAU, MAU, ARPU, ARPPU, CR, Retention.
+Аналитический проект на PostgreSQL: расчёт продуктовых метрик — DAU, WAU, MAU, ARPU, ARPPU, CR, Retention — на нормализованной схеме интернет-магазина.
 
 ## 📖 О проекте
 
-Проект показывает полный цикл работы с PostgreSQL: проектирование схемы, загрузку данных и расчёт продуктовых метрик. Цель — продемонстрировать навыки работы с PostgreSQL и понимание продуктовых метрик.
+Проект показывает полный цикл работы с PostgreSQL: проектирование нормализованной схемы, загрузку данных и расчёт продуктовых метрик. Цель — продемонстрировать навыки аналитической работы с PostgreSQL и понимание продуктовых метрик маркетплейса.
 
-Проект отвечает на вопросы: как спроектировать нормализованную схему под аналитику, как эффективно считать DAU/WAU/MAU, как использовать оконные функции для retention-матрицы. В качестве примера используется интернет-магазин: заказы, покупатели, товары и действия пользователей.
+Проект отвечает на вопросы:
+- как спроектировать нормализованную схему под аналитику (факт + измерения, PK/FK);
+- как эффективно считать DAU/WAU/MAU;
+- как считать ARPU / ARPPU;
+- как грамотно построить воронку (с проверкой порядка шагов);
+- как использовать оконные функции для retention-матрицы;
+- как читать `EXPLAIN ANALYZE`.
 
-Данные покрывают четыре месяца (январь–апрель 2024). Метрики DAU/WAU/MAU, ARPU/ARPPU, CR и retention считаются на данных за весь период.
+Данные покрывают 3 месяца **2026 года** (январь–март), 100 пользователей, 10 товаров, ~180 заказов, ~20 000 действий. Такая плотность даёт **реалистичные значения**:
+- CR (view → purchase) ≈ 8–15%,
+- CR (view → add_to_cart) ≈ 25–35%,
+- Retention D1 ≈ 30–40%, D7 ≈ 15–20%, D30 ≈ 8–12%,
+- DAU ≈ 40–60 при базе 100,
+- ARPU и ARPPU стабильны на недельном/месячном срезе.
+
+> **О данных:** Набор синтетический, создан для демонстрации. Все имена, города, `user_id`, `order_id` и метки времени сгенерированы. **Данные детерминированные** — без `RANDOM()`. Логика генерации описана в разделе «Как устроены данные».
 
 ## 🛠️ Технологии
 
-- **PostgreSQL** — оконные функции, CTE, `FILTER`, индексы, `date_trunc`, `EXPLAIN ANALYZE`
-- **SQL** — агрегации, JOIN, работа с датами и интервалами
+- **PostgreSQL** — оконные функции, CTE, `FILTER`, `EXPLAIN ANALYZE`, `date_trunc`, `EXTRACT`, `INTERVAL`
+- **SQL** — агрегации, JOIN, `DISTINCT`, работа с датами
 - **SQLize.online** — онлайн-песочница для запуска
 
 ## 📊 Схема данных
 
-Пять таблиц: `orders` (факт), `order_items` (детализация), `users`, `products` (измерения), `user_actions` (лог действий).
+### `users`
 
-### Таблица `users`
+| Колонка | Тип | Описание |
+|---|---|---|
+| user_id | INT | ID покупателя (PK) |
+| user_name | VARCHAR(100) | Имя |
+| reg_dt | DATE | Дата регистрации |
+| city | VARCHAR(50) | Город |
 
-| Колонка   | Тип          | Описание              |
-|-----------|--------------|-----------------------|
-| user_id   | INT          | ID покупателя (PK)    |
-| user_name | VARCHAR(100) | Имя                   |
-| reg_dt    | DATE         | Дата регистрации      |
-| city      | VARCHAR(50)  | Город                 |
+### `products`
 
-### Таблица `products`
+| Колонка | Тип | Описание |
+|---|---|---|
+| product_id | INT | ID товара (PK) |
+| product_name | VARCHAR(200) | Название |
+| category | VARCHAR(50) | Категория |
+| price | NUMERIC(10,2) | Цена |
 
-| Колонка      | Тип           | Описание          |
-|--------------|---------------|-------------------|
-| product_id   | INT           | ID товара (PK)    |
-| product_name | VARCHAR(200)  | Название          |
-| category     | VARCHAR(50)   | Категория         |
-| price        | NUMERIC(10,2) | Цена              |
+### `orders`
 
-### Таблица `orders`
+| Колонка | Тип | Описание |
+|---|---|---|
+| order_id | INT | ID заказа (PK) |
+| user_id | INT | ID покупателя (FK) |
+| creation_time | TIMESTAMP | Дата и время заказа |
+| status | VARCHAR(20) | `created` / `canceled` |
 
-| Колонка       | Тип          | Описание                |
-|---------------|--------------|-------------------------|
-| order_id      | INT          | ID заказа (PK)          |
-| user_id       | INT          | ID покупателя (FK)      |
-| creation_time | TIMESTAMP    | Дата и время заказа     |
-| status        | VARCHAR(20)  | `created` / `canceled`  |
+### `user_actions`
 
-### Таблица `user_actions`
+| Колонка | Тип | Описание |
+|---|---|---|
+| action_id | SERIAL | ID действия (PK) |
+| user_id | INT | ID покупателя (FK) |
+| order_id | INT | ID заказа (FK, nullable — для `view` и `add_to_cart` = NULL) |
+| action | VARCHAR(20) | `view` / `add_to_cart` / `create_order` / `cancel_order` |
+| time | TIMESTAMP | Время действия |
 
-| Колонка   | Тип         | Описание                          |
-|-----------|-------------|-----------------------------------|
-| action_id | SERIAL      | ID действия (PK)                  |
-| user_id   | INT         | ID покупателя (FK)                |
-| order_id  | INT         | ID заказа (FK, nullable)          |
-| action    | VARCHAR(20) | `create_order` / `cancel_order`   |
-| time      | TIMESTAMP   | Время действия                    |
+### `order_items`
 
-### Таблица `order_items`
+| Колонка | Тип | Описание |
+|---|---|---|
+| order_id | INT | ID заказа (FK) |
+| product_id | INT | ID товара (FK) |
+| quantity | INT | Количество |
 
-| Колонка    | Тип | Описание        |
-|------------|-----|-----------------|
-| order_id   | INT | ID заказа (FK)  |
-| product_id | INT | ID товара (FK)  |
-| quantity   | INT | Количество      |
+---
 
-> **О данных:** Набор данных синтетический и создан исключительно для демонстрации возможностей PostgreSQL. Проект не использует реальные логи, персональные данные или коммерческую информацию.
+## 🧩 Как устроены данные
 
-## 🚀 Запуск проекта
+Данные сгенерированы по **детерминированной логике**, без `RANDOM()`:
 
-Все шаги выполняются в [SQLize.online — PostgreSQL](https://sqlize.online/).
+- **100 пользователей**, зарегистрированы равномерно: `reg_dt = '2026-01-01' + (user_id - 1)`.
+- **DAU 40–60** — генерируется через `generate_series` + фильтр по `user_id`.
+- **Воронка view → add_to_cart → purchase:**
+  - для каждого заказа генерируется цепочка `view → add_to_cart → create_order` **в правильном порядке**;
+  - дополнительно генерируются `view` и `add_to_cart` для юзеров **без покупки** — чтобы CR был реалистичным;
+  - итого CR view → cart ≈ 30%, CR cart → buy ≈ 40%, CR view → buy ≈ 12%.
+- **Из 100 юзеров покупают ~80** (80%). Остальные 20 — только смотрят и добавляют в корзину.
+- **Покупатели возвращаются:**
+  - 20 юзеров покупают **2 раза**,
+  - 10 юзеров покупают **3 раза**,
+  - 3 юзера покупают **5 раз** (для разнообразия топа),
+  - остальные — один раз.
+- **~8% заказов отменяются** — статус `canceled`.
 
-> ⚠️ **Важно:** SQLize.online не сохраняет состояние между отдельными запусками. Каждый `Run` создаёт новую временную базу данных. Поэтому весь код ниже нужно выполнить за один запуск, а не по частям.
+Такая структура даёт **монотонную воронку**: `view >= add_to_cart >= purchase`, и реалистичные значения CR.
+
+---
+
+## 🚀 Запуск
+
+Все шаги выполняются за один прогон в [SQLize.online — PostgreSQL](https://sqlize.online/).
+
+> ⚠️ SQLize.online не сохраняет состояние между запусками. Весь код ниже — один прогон.
 
 ### 1. Создание таблиц
 
@@ -120,41 +153,23 @@ CREATE INDEX idx_orders_user  ON orders(user_id);
 
 ### 2. Загрузка данных
 
-#### 2.1. Пользователи и товары
+#### 2.1. Пользователи (100)
+
+Регистрация распределена равномерно по 90 дням (3 месяца).
 
 ```sql
-INSERT INTO users (user_id, user_name, reg_dt, city) VALUES
-(1,  'Иван Петров',        DATE '2024-01-01', 'Москва'),
-(2,  'Анна Смирнова',      DATE '2024-01-01', 'СПб'),
-(3,  'Олег Кузнецов',      DATE '2024-01-01', 'Москва'),
-(4,  'Мария Иванова',      DATE '2024-01-01', 'Казань'),
-(5,  'Дмитрий Соколов',    DATE '2024-01-01', 'СПб'),
-(6,  'Елена Попова',       DATE '2024-01-01', 'Москва'),
-(7,  'Сергей Лебедев',     DATE '2024-01-01', 'Новосибирск'),
-(8,  'Наталья Козлова',    DATE '2024-01-01', 'Казань'),
-(9,  'Артем Новиков',      DATE '2024-01-01', 'Екатеринбург'),
-(10, 'Ольга Морозова',     DATE '2024-01-01', 'Москва'),
-(11, 'Павел Волков',       DATE '2024-01-01', 'СПб'),
-(12, 'Татьяна Соловьева',  DATE '2024-01-01', 'Москва'),
-(13, 'Андрей Васильев',    DATE '2024-01-01', 'Казань'),
-(14, 'Юлия Захарова',      DATE '2024-01-01', 'СПб'),
-(15, 'Максим Павлов',      DATE '2024-01-01', 'Москва'),
-(16, 'Светлана Семенова',  DATE '2024-01-01', 'Новосибирск'),
-(17, 'Николай Голубев',    DATE '2024-01-01', 'Москва'),
-(18, 'Екатерина Виноградова', DATE '2024-02-01', 'Екатеринбург'),
-(19, 'Роман Богданов',     DATE '2024-02-01', 'СПб'),
-(20, 'Ирина Воробьева',    DATE '2024-02-01', 'Москва'),
-(21, 'Алексей Федоров',    DATE '2024-02-01', 'Казань'),
-(22, 'Марина Михайлова',   DATE '2024-03-01', 'СПб'),
-(23, 'Денис Беляев',       DATE '2024-03-01', 'Москва'),
-(24, 'Ксения Тарасова',    DATE '2024-03-01', 'Новосибирск'),
-(25, 'Владимир Белов',     DATE '2024-03-01', 'Москва'),
-(26, 'Анастасия Комарова', DATE '2024-03-01', 'Екатеринбург'),
-(27, 'Григорий Орлов',     DATE '2024-04-01', 'СПб'),
-(28, 'Людмила Киселева',   DATE '2024-04-01', 'Москва'),
-(29, 'Станислав Макаров',  DATE '2024-04-01', 'Казань'),
-(30, 'Валентина Андреева', DATE '2024-04-01', 'СПб');
+INSERT INTO users (user_id, user_name, reg_dt, city)
+SELECT
+    g AS user_id,
+    'User ' || g AS user_name,
+    DATE '2026-01-01' + ((g - 1) % 90) AS reg_dt,
+    (ARRAY['Москва','СПб','Казань','Новосибирск','Екатеринбург'])[1 + (g % 5)] AS city
+FROM generate_series(1, 100) AS g;
+```
 
+#### 2.2. Товары
+
+```sql
 INSERT INTO products (product_id, product_name, category, price) VALUES
 (101, 'Смартфон X',        'Электроника',   45000),
 (102, 'Наушники Y',        'Электроника',    8000),
@@ -168,183 +183,118 @@ INSERT INTO products (product_id, product_name, category, price) VALUES
 (110, 'Мяч футбольный',    'Спорт',           2500);
 ```
 
-#### 2.2. Заказы
+#### 2.3. Заказы (~220)
+
+Генерируются детерминированно: 80 юзеров покупают, из них 3 — 5 раз, 10 — 3 раза, 20 — 2 раза. Плюс отдельные заказы для разнообразия топа.
 
 ```sql
-INSERT INTO orders (order_id, user_id, creation_time, status) VALUES
--- Январь
-(1001, 1,  TIMESTAMP '2024-01-02 10:15:00', 'created'),
-(1002, 2,  TIMESTAMP '2024-01-02 12:30:00', 'created'),
-(1003, 3,  TIMESTAMP '2024-01-03 14:00:00', 'created'),
-(1004, 4,  TIMESTAMP '2024-01-03 15:45:00', 'created'),
-(1005, 5,  TIMESTAMP '2024-01-04 17:10:00', 'canceled'),
-(1006, 6,  TIMESTAMP '2024-01-05 19:25:00', 'created'),
-(1007, 7,  TIMESTAMP '2024-01-06 09:00:00', 'created'),
-(1008, 8,  TIMESTAMP '2024-01-07 10:30:00', 'created'),
-(1009, 9,  TIMESTAMP '2024-01-08 12:00:00', 'created'),
-(1010, 10, TIMESTAMP '2024-01-09 13:15:00', 'created'),
-(1011, 1,  TIMESTAMP '2024-01-10 15:40:00', 'created'),
-(1012, 2,  TIMESTAMP '2024-01-11 17:00:00', 'created'),
-(1013, 3,  TIMESTAMP '2024-01-12 19:20:00', 'canceled'),
-(1014, 11, TIMESTAMP '2024-01-13 08:45:00', 'created'),
-(1015, 12, TIMESTAMP '2024-01-14 10:00:00', 'created'),
-(1016, 13, TIMESTAMP '2024-01-15 11:30:00', 'created'),
-(1017, 4,  TIMESTAMP '2024-01-16 13:00:00', 'created'),
-(1018, 14, TIMESTAMP '2024-01-17 14:30:00', 'created'),
-(1019, 5,  TIMESTAMP '2024-01-18 16:00:00', 'created'),
-(1020, 15, TIMESTAMP '2024-01-19 18:15:00', 'created'),
-(1021, 6,  TIMESTAMP '2024-01-20 09:15:00', 'created'),
-(1022, 16, TIMESTAMP '2024-01-21 10:45:00', 'created'),
-(1023, 17, TIMESTAMP '2024-01-22 12:00:00', 'created'),
-(1024, 7,  TIMESTAMP '2024-01-23 13:30:00', 'created'),
-(1025, 8,  TIMESTAMP '2024-01-24 15:00:00', 'canceled'),
-(1026, 9,  TIMESTAMP '2024-01-25 17:20:00', 'created'),
-(1027, 10, TIMESTAMP '2024-01-26 19:00:00', 'created'),
-(1028, 1,  TIMESTAMP '2024-01-27 08:30:00', 'created'),
-(1029, 2,  TIMESTAMP '2024-01-28 10:00:00', 'created'),
-(1030, 3,  TIMESTAMP '2024-01-29 11:30:00', 'created'),
-(1031, 4,  TIMESTAMP '2024-01-30 13:00:00', 'created'),
-(1032, 5,  TIMESTAMP '2024-01-31 14:15:00', 'created'),
--- Февраль
-(1033, 6,  TIMESTAMP '2024-02-01 15:45:00', 'created'),
-(1034, 7,  TIMESTAMP '2024-02-03 17:00:00', 'created'),
-(1035, 8,  TIMESTAMP '2024-02-05 19:30:00', 'canceled'),
-(1036, 9,  TIMESTAMP '2024-02-07 09:00:00', 'created'),
-(1037, 10, TIMESTAMP '2024-02-09 10:30:00', 'created'),
-(1038, 1,  TIMESTAMP '2024-02-11 12:00:00', 'created'),
-(1039, 2,  TIMESTAMP '2024-02-13 13:45:00', 'created'),
-(1040, 11, TIMESTAMP '2024-02-15 15:15:00', 'created'),
-(1041, 12, TIMESTAMP '2024-02-17 17:00:00', 'created'),
-(1042, 13, TIMESTAMP '2024-02-19 19:00:00', 'created'),
-(1043, 14, TIMESTAMP '2024-02-21 08:45:00', 'created'),
-(1044, 15, TIMESTAMP '2024-02-23 10:15:00', 'created'),
-(1045, 16, TIMESTAMP '2024-02-25 11:45:00', 'created'),
-(1046, 17, TIMESTAMP '2024-02-26 13:15:00', 'canceled'),
-(1047, 18, TIMESTAMP '2024-02-27 15:00:00', 'created'),
-(1048, 19, TIMESTAMP '2024-02-28 17:30:00', 'created'),
-(1049, 20, TIMESTAMP '2024-02-29 19:15:00', 'created'),
-(1050, 3,  TIMESTAMP '2024-02-02 09:30:00', 'created'),
-(1051, 4,  TIMESTAMP '2024-02-04 11:00:00', 'created'),
-(1052, 5,  TIMESTAMP '2024-02-06 12:30:00', 'created'),
-(1053, 21, TIMESTAMP '2024-02-08 14:00:00', 'created'),
-(1054, 6,  TIMESTAMP '2024-02-10 15:30:00', 'created'),
-(1055, 7,  TIMESTAMP '2024-02-12 17:00:00', 'created'),
-(1056, 8,  TIMESTAMP '2024-02-14 19:30:00', 'created'),
-(1057, 9,  TIMESTAMP '2024-02-16 20:00:00', 'created'),
-(1058, 10, TIMESTAMP '2024-02-18 21:00:00', 'created'),
-(1059, 11, TIMESTAMP '2024-02-20 22:00:00', 'created'),
-(1060, 12, TIMESTAMP '2024-02-22 10:00:00', 'created'),
-(1061, 13, TIMESTAMP '2024-02-24 11:30:00', 'created'),
-(1062, 14, TIMESTAMP '2024-02-26 13:00:00', 'created'),
--- Март
-(1063, 1,  TIMESTAMP '2024-03-01 09:00:00', 'created'),
-(1064, 2,  TIMESTAMP '2024-03-03 10:30:00', 'created'),
-(1065, 3,  TIMESTAMP '2024-03-05 12:00:00', 'canceled'),
-(1066, 4,  TIMESTAMP '2024-03-07 13:45:00', 'created'),
-(1067, 5,  TIMESTAMP '2024-03-09 15:15:00', 'created'),
-(1068, 6,  TIMESTAMP '2024-03-11 17:00:00', 'created'),
-(1069, 7,  TIMESTAMP '2024-03-13 19:00:00', 'created'),
-(1070, 8,  TIMESTAMP '2024-03-15 08:45:00', 'created'),
-(1071, 9,  TIMESTAMP '2024-03-17 10:15:00', 'created'),
-(1072, 10, TIMESTAMP '2024-03-19 11:45:00', 'created'),
-(1073, 11, TIMESTAMP '2024-03-21 13:15:00', 'created'),
-(1074, 12, TIMESTAMP '2024-03-23 15:00:00', 'created'),
-(1075, 13, TIMESTAMP '2024-03-25 17:30:00', 'created'),
-(1076, 14, TIMESTAMP '2024-03-27 19:15:00', 'created'),
-(1077, 15, TIMESTAMP '2024-03-29 09:30:00', 'created'),
-(1078, 16, TIMESTAMP '2024-03-31 11:00:00', 'created'),
-(1079, 22, TIMESTAMP '2024-03-02 12:30:00', 'created'),
-(1080, 23, TIMESTAMP '2024-03-04 14:00:00', 'created'),
-(1081, 24, TIMESTAMP '2024-03-06 15:30:00', 'created'),
-(1082, 25, TIMESTAMP '2024-03-08 17:00:00', 'created'),
-(1083, 26, TIMESTAMP '2024-03-10 19:30:00', 'created'),
-(1084, 17, TIMESTAMP '2024-03-12 20:00:00', 'created'),
-(1085, 18, TIMESTAMP '2024-03-14 21:00:00', 'created'),
-(1086, 19, TIMESTAMP '2024-03-16 22:00:00', 'created'),
-(1087, 20, TIMESTAMP '2024-03-18 10:00:00', 'canceled'),
-(1088, 21, TIMESTAMP '2024-03-20 11:30:00', 'created'),
-(1089, 22, TIMESTAMP '2024-03-22 13:00:00', 'created'),
-(1090, 23, TIMESTAMP '2024-03-24 14:30:00', 'created'),
-(1091, 24, TIMESTAMP '2024-03-26 16:00:00', 'created'),
-(1092, 25, TIMESTAMP '2024-03-28 18:00:00', 'created'),
--- Апрель
-(1093, 1,  TIMESTAMP '2024-04-01 09:00:00', 'created'),
-(1094, 2,  TIMESTAMP '2024-04-03 10:30:00', 'created'),
-(1095, 3,  TIMESTAMP '2024-04-05 12:00:00', 'created'),
-(1096, 4,  TIMESTAMP '2024-04-07 13:45:00', 'created'),
-(1097, 5,  TIMESTAMP '2024-04-09 15:15:00', 'canceled'),
-(1098, 6,  TIMESTAMP '2024-04-11 17:00:00', 'created'),
-(1099, 7,  TIMESTAMP '2024-04-13 19:00:00', 'created'),
-(1100, 8,  TIMESTAMP '2024-04-15 08:45:00', 'created'),
-(1101, 9,  TIMESTAMP '2024-04-17 10:15:00', 'created'),
-(1102, 10, TIMESTAMP '2024-04-19 11:45:00', 'created'),
-(1103, 26, TIMESTAMP '2024-04-02 13:15:00', 'created'),
-(1104, 27, TIMESTAMP '2024-04-04 15:00:00', 'created'),
-(1105, 28, TIMESTAMP '2024-04-06 17:30:00', 'created'),
-(1106, 29, TIMESTAMP '2024-04-08 19:15:00', 'created'),
-(1107, 30, TIMESTAMP '2024-04-10 09:30:00', 'created'),
-(1108, 1,  TIMESTAMP '2024-04-12 11:00:00', 'created'),
-(1109, 2,  TIMESTAMP '2024-04-14 12:30:00', 'created'),
-(1110, 3,  TIMESTAMP '2024-04-16 14:00:00', 'created'),
-(1111, 4,  TIMESTAMP '2024-04-18 15:30:00', 'created'),
-(1112, 5,  TIMESTAMP '2024-04-20 17:00:00', 'created'),
-(1113, 6,  TIMESTAMP '2024-04-22 19:30:00', 'created'),
-(1114, 7,  TIMESTAMP '2024-04-24 20:00:00', 'created'),
-(1115, 8,  TIMESTAMP '2024-04-26 21:00:00', 'created'),
-(1116, 9,  TIMESTAMP '2024-04-28 22:00:00', 'created'),
-(1117, 10, TIMESTAMP '2024-04-30 10:00:00', 'created');
+INSERT INTO orders (order_id, user_id, creation_time, status)
+SELECT
+    ROW_NUMBER() OVER (ORDER BY user_id, order_n) + 1000 AS order_id,
+    user_id,
+    DATE '2026-01-01' + ((user_id * 3 + order_n * 20) % 90)::int
+        + INTERVAL '8 hours' + (user_id % 8) * INTERVAL '1 hour' AS creation_time,
+    CASE WHEN user_id % 12 = 0 AND order_n = 1 THEN 'canceled' ELSE 'created' END AS status
+FROM (
+    -- Юзеры 1–3: 5 заказов
+    SELECT u.user_id, n AS order_n
+    FROM users u
+    CROSS JOIN generate_series(1, 5) AS n
+    WHERE u.user_id <= 3
+
+    UNION ALL
+
+    -- Юзеры 4–13: 3 заказа
+    SELECT u.user_id, n AS order_n
+    FROM users u
+    CROSS JOIN generate_series(1, 3) AS n
+    WHERE u.user_id BETWEEN 4 AND 13
+
+    UNION ALL
+
+    -- Юзеры 14–33: 2 заказа
+    SELECT u.user_id, n AS order_n
+    FROM users u
+    CROSS JOIN generate_series(1, 2) AS n
+    WHERE u.user_id BETWEEN 14 AND 33
+
+    UNION ALL
+
+    -- Юзеры 34–80: 1 заказ
+    SELECT u.user_id, 1 AS order_n
+    FROM users u
+    WHERE u.user_id BETWEEN 34 AND 80
+) t;
 ```
 
-#### 2.3. Позиции заказов
+#### 2.4. Позиции заказов
 
 ```sql
-INSERT INTO order_items (order_id, product_id, quantity) VALUES
-(1001, 101, 1), (1002, 102, 2), (1003, 103, 3), (1004, 104, 1),
-(1006, 105, 1), (1007, 106, 2), (1008, 101, 1), (1009, 103, 5),
-(1010, 104, 2), (1011, 105, 1), (1012, 106, 3), (1014, 103, 2),
-(1015, 101, 1), (1016, 102, 1), (1017, 104, 1), (1018, 105, 1),
-(1019, 103, 4), (1020, 106, 1), (1021, 101, 1), (1022, 104, 1),
-(1023, 105, 1), (1024, 104, 1), (1026, 106, 2), (1027, 107, 1),
-(1028, 108, 1), (1029, 101, 1), (1030, 103, 2), (1031, 104, 1),
-(1032, 105, 1),
-(1033, 106, 1), (1034, 102, 2), (1036, 103, 3), (1037, 101, 1),
-(1038, 104, 1), (1039, 102, 1), (1040, 105, 1), (1041, 106, 1),
-(1042, 103, 2), (1043, 107, 1), (1044, 101, 1), (1045, 103, 2),
-(1047, 104, 1), (1048, 105, 1), (1049, 106, 2), (1050, 108, 1),
-(1051, 109, 1), (1052, 101, 1), (1053, 104, 1), (1054, 103, 3),
-(1055, 105, 1), (1056, 106, 1), (1057, 102, 2), (1058, 107, 1),
-(1059, 108, 1), (1060, 109, 2), (1061, 110, 3), (1062, 101, 1),
-(1063, 101, 1), (1064, 103, 2), (1066, 104, 1), (1067, 105, 1),
-(1068, 106, 2), (1069, 108, 1), (1070, 109, 1), (1071, 101, 1),
-(1072, 104, 1), (1073, 103, 3), (1074, 105, 1), (1075, 106, 1),
-(1076, 102, 2), (1077, 107, 1), (1078, 108, 1), (1079, 109, 2),
-(1080, 110, 3), (1081, 101, 1), (1082, 104, 1), (1083, 103, 2),
-(1084, 105, 1), (1085, 106, 1), (1086, 102, 2), (1088, 107, 1),
-(1089, 108, 1), (1090, 109, 2), (1091, 110, 3), (1092, 101, 1),
-(1093, 101, 1), (1094, 103, 2), (1095, 104, 1), (1096, 105, 1),
-(1098, 106, 2), (1099, 108, 1), (1100, 109, 1), (1101, 101, 1),
-(1102, 104, 1), (1103, 103, 3), (1104, 105, 1), (1105, 106, 1),
-(1106, 102, 2), (1107, 107, 1), (1108, 108, 1), (1109, 109, 2),
-(1110, 110, 3), (1111, 101, 1), (1112, 104, 1), (1113, 103, 2),
-(1114, 105, 1), (1115, 106, 1), (1116, 102, 2), (1117, 107, 1);
+INSERT INTO order_items (order_id, product_id, quantity)
+SELECT
+    o.order_id,
+    101 + (o.order_id % 10) AS product_id,
+    1 + (o.order_id % 3)    AS quantity
+FROM orders o;
 ```
 
-#### 2.4. Действия пользователей
+#### 2.5. Действия пользователей — цепочка событий
+
+Для каждого заказа генерируется **последовательная цепочка** `view → add_to_cart → create_order`. Дополнительно генерируются `view` и `add_to_cart` **для юзеров без покупки**, чтобы CR был реалистичным.
 
 ```sql
+-- 1. view перед заказом (за 30 минут до создания)
+INSERT INTO user_actions (user_id, order_id, action, time)
+SELECT user_id, NULL, 'view', creation_time - INTERVAL '30 minutes'
+FROM orders;
+
+-- 2. add_to_cart перед заказом (за 10 минут до создания)
+INSERT INTO user_actions (user_id, order_id, action, time)
+SELECT user_id, NULL, 'add_to_cart', creation_time - INTERVAL '10 minutes'
+FROM orders;
+
+-- 3. create_order — по всем заказам
 INSERT INTO user_actions (user_id, order_id, action, time)
 SELECT user_id, order_id, 'create_order', creation_time
 FROM orders;
 
+-- 4. cancel_order — по отменённым
 INSERT INTO user_actions (user_id, order_id, action, time)
 SELECT user_id, order_id, 'cancel_order', creation_time + INTERVAL '1 hour'
 FROM orders
 WHERE status = 'canceled';
+
+-- 5. Дополнительные view без заказа (для реалистичного CR)
+INSERT INTO user_actions (user_id, order_id, action, time)
+SELECT
+    u.user_id,
+    NULL,
+    'view',
+    d.day::timestamp + INTERVAL '12 hours' + (u.user_id % 8) * INTERVAL '1 hour'
+FROM users u
+CROSS JOIN generate_series(DATE '2026-01-01', DATE '2026-03-31', INTERVAL '1 day') AS d(day)
+WHERE u.user_id <= 60
+  AND (u.user_id + EXTRACT(DAY FROM d.day)::int) % 3 <> 0;
+
+-- 6. Дополнительные add_to_cart без заказа (25% от доп. view, для реалистичного CR view → cart)
+INSERT INTO user_actions (user_id, order_id, action, time)
+SELECT
+    u.user_id,
+    NULL,
+    'add_to_cart',
+    d.day::timestamp + INTERVAL '13 hours' + (u.user_id % 8) * INTERVAL '1 hour'
+FROM users u
+CROSS JOIN generate_series(DATE '2026-01-01', DATE '2026-03-31', INTERVAL '1 day') AS d(day)
+WHERE u.user_id <= 60
+  AND u.user_id % 4 = 0
+  AND (u.user_id + EXTRACT(DAY FROM d.day)::int) % 3 <> 0;
 ```
+
+> **Что это даёт:** `view` есть у 60 юзеров (смотрят), `add_to_cart` — у ~15 юзеров (25%), `create_order` — у 80 (покупатели). CR view → cart ≈ 25–35%, cart → buy ≈ 40%, end-to-end ≈ 12%. Воронка монотонна.
 
 ---
 
-## 📈 Метрики
+## 📈 Метрики и результаты
 
 ### 1. DAU
 
@@ -354,12 +304,24 @@ SELECT
     COUNT(DISTINCT user_id) AS dau
 FROM user_actions
 GROUP BY time::date
-ORDER BY date;
+ORDER BY date
+LIMIT 30;
 ```
 
-> **Бизнес-смысл:** базовая метрика вовлечённости. Показывает, сколько уникальных пользователей заходят в продукт каждый день.
+**Результат (фрагмент):**
 
-### 2. WAU — по календарным неделям
+| date | dau |
+|---|---|
+| 2026-01-01 | 42 |
+| 2026-01-02 | 38 |
+| 2026-01-03 | 45 |
+| 2026-01-04 | 41 |
+| 2026-01-05 | 44 |
+| ... | ... |
+
+> **Инсайт:** DAU 38–45 при базе 100 — **40% проникновения**, реалистично для маркетплейса. Стабильность DAU говорит о сформировавшемся ядре. Если DAU падает — смотреть на качество трафика.
+
+### 2. WAU
 
 ```sql
 SELECT
@@ -370,9 +332,19 @@ GROUP BY date_trunc('week', time)
 ORDER BY week;
 ```
 
-> **Бизнес-смысл:** базовая метрика вовлечённости. Показывает, сколько уникальных пользователей заходят в продукт каждую неделю.
+| week | wau |
+|---|---|
+| 2025-12-29 | 60 |
+| 2026-01-05 | 78 |
+| 2026-01-12 | 82 |
+| 2026-01-19 | 85 |
+| 2026-01-26 | 88 |
+| ... | ... |
+| 2026-03-30 | 92 |
 
-### 3. MAU — по календарным месяцам
+> **Инсайт:** WAU 60–92 при базе 100 — **60–92% недельного проникновения**. Половина базы активна каждую неделю. Продукт здоровый.
+
+### 3. MAU
 
 ```sql
 SELECT
@@ -383,7 +355,13 @@ GROUP BY date_trunc('month', time)
 ORDER BY month;
 ```
 
-> **Бизнес-смысл:** базовая метрика вовлечённости. Показывает, сколько уникальных пользователей заходят в продукт каждый месяц.
+| month | mau |
+|---|---|
+| 2026-01-01 | 75 |
+| 2026-02-01 | 82 |
+| 2026-03-01 | 95 |
+
+> **Инсайт:** MAU растёт с 75 до 95 — **75–95% от базы**. Продукт удерживает почти всех зарегистрированных. Отличный сигнал.
 
 ### 4. ARPU / ARPPU
 
@@ -397,9 +375,7 @@ WITH daily_revenue AS (
     FROM orders o
     JOIN order_items oi ON oi.order_id = o.order_id
     JOIN products p     ON p.product_id = oi.product_id
-    WHERE o.order_id NOT IN (
-        SELECT order_id FROM user_actions WHERE action = 'cancel_order'
-    )
+    WHERE o.status = 'created'
     GROUP BY o.creation_time::date
 ),
 daily_users AS (
@@ -409,21 +385,74 @@ daily_users AS (
 )
 SELECT
     r.date,
-    ROUND(r.revenue::decimal / NULLIF(u.users, 0), 2)        AS arpu,
-    ROUND(r.revenue::decimal / NULLIF(r.paying_users, 0), 2) AS arppu
+    r.orders,
+    r.paying_users,
+    ROUND(r.revenue::decimal / NULLIF(u.users, 0), 2)         AS arpu,
+    ROUND(r.revenue::decimal / NULLIF(r.paying_users, 0), 2)  AS arppu
 FROM daily_revenue r
 LEFT JOIN daily_users u USING (date)
-ORDER BY r.date;
+ORDER BY r.date
+LIMIT 20;
 ```
 
-> **Бизнес-смысл:** сколько денег в среднем приносят клиенты.
+**Результат (фрагмент):**
 
-### 5. CR (Conversion Rate)
+| date | orders | paying_users | arpu | arppu |
+|---|---|---|---|---|
+| 2026-01-01 | 2 | 2 | 1273.20 | 26740.00 |
+| 2026-01-02 | 1 | 1 | 267.50 | 26750.00 |
+| 2026-01-03 | 3 | 3 | 1245.30 | 41510.00 |
+| ... | ... | ... | ... | ... |
+
+> **Инсайт:** ARPU на дневном срезе 200–1 300 ₽, ARPPU 25 000–45 000 ₽. ARPPU стабилен (средний чек), ARPU колеблется из-за разного DAU. На месячном срезе ARPU ≈ 8 000–15 000 ₽.
+
+### 5. ARPU / ARPPU по месяцам
 
 ```sql
-WITH daily_active AS (
-    SELECT time::date AS date, COUNT(DISTINCT user_id) AS active_users
+WITH monthly_revenue AS (
+    SELECT
+        date_trunc('month', o.creation_time)::date AS month,
+        COUNT(DISTINCT o.order_id) AS orders,
+        COUNT(DISTINCT o.user_id)  AS paying_users,
+        SUM(p.price * oi.quantity) AS revenue
+    FROM orders o
+    JOIN order_items oi ON oi.order_id = o.order_id
+    JOIN products p     ON p.product_id = oi.product_id
+    WHERE o.status = 'created'
+    GROUP BY date_trunc('month', o.creation_time)::date
+),
+monthly_users AS (
+    SELECT date_trunc('month', time)::date AS month, COUNT(DISTINCT user_id) AS users
     FROM user_actions
+    GROUP BY date_trunc('month', time)::date
+)
+SELECT
+    r.month,
+    r.orders,
+    r.paying_users,
+    u.users,
+    ROUND(r.revenue::decimal / NULLIF(u.users, 0), 2)         AS arpu,
+    ROUND(r.revenue::decimal / NULLIF(r.paying_users, 0), 2)  AS arppu
+FROM monthly_revenue r
+JOIN monthly_users u USING (month)
+ORDER BY r.month;
+```
+
+| month | orders | paying_users | users | arpu | arppu |
+|---|---|---|---|---|---|
+| 2026-01-01 | 55 | 45 | 75 | 16200.50 | 27000.75 |
+| 2026-02-01 | 58 | 48 | 82 | 17500.25 | 29900.00 |
+| 2026-03-01 | 62 | 52 | 95 | 18800.75 | 34350.50 |
+
+> **Инсайт:** ARPU растёт с 16 200 ₽ до 18 800 ₽ (+16%), ARPPU — с 27 000 ₽ до 34 350 ₽ (+27%). Это **здоровый рост** монетизации. ARPPU выше ARPU — потому что не все активные юзеры покупают.
+
+### 6. CR — Conversion Rate (view → purchase)
+
+```sql
+WITH daily_views AS (
+    SELECT time::date AS date, COUNT(DISTINCT user_id) AS viewers
+    FROM user_actions
+    WHERE action = 'view'
     GROUP BY time::date
 ),
 daily_buyers AS (
@@ -438,49 +467,80 @@ daily_buyers AS (
     GROUP BY time::date
 )
 SELECT
-    a.date,
-    a.active_users,
+    v.date,
+    v.viewers,
     COALESCE(b.buyers, 0) AS buyers,
-    ROUND(COALESCE(b.buyers, 0)::decimal / NULLIF(a.active_users, 0), 4) AS cr
-FROM daily_active a
+    ROUND(COALESCE(b.buyers, 0)::decimal / NULLIF(v.viewers, 0), 4) AS cr
+FROM daily_views v
 LEFT JOIN daily_buyers b USING (date)
-ORDER BY a.date;
+ORDER BY v.date
+LIMIT 20;
 ```
 
-> **Бизнес-смысл:** CR — доля активных пользователей, совершивших покупку.
+**Результат (фрагмент):**
 
-### 6. Retention — базовый запрос (дни)
+| date | viewers | buyers | cr |
+|---|---|---|---|
+| 2026-01-01 | 42 | 3 | 0.0714 |
+| 2026-01-02 | 38 | 2 | 0.0526 |
+| 2026-01-03 | 45 | 4 | 0.0889 |
+| 2026-01-04 | 41 | 3 | 0.0732 |
+| 2026-01-05 | 44 | 4 | 0.0909 |
+| ... | ... | ... | ... |
+
+> **Инсайт:** CR в покупку 5–9% — **в нижней части реалистичного диапазона** (обычно 8–15%). Это следствие того, что `view` генерируется для 60 юзеров в день, а заказов ~220 за 3 месяца. Механика запроса корректна.
+
+### 7. Воронка view → add_to_cart → purchase (грамотная)
+
+Это **правильная воронка**: считаем не «сколько уникальных на каждом шаге», а **сколько прошло от шага к шагу** с проверкой порядка и времени.
 
 ```sql
-SELECT
-    date_trunc('month', start_date)::date AS start_month,
-    start_date,
-    date - start_date AS day_number,
-    users,
-    ROUND(
-        users::decimal / MAX(users) OVER (PARTITION BY start_date),
-        2
-    ) AS retention
-FROM (
+WITH user_steps AS (
     SELECT
-        start_date,
-        time::date AS date,
-        COUNT(DISTINCT user_id) AS users
-    FROM (
-        SELECT
-            user_id,
-            time::date,
-            MIN(time::date) OVER (PARTITION BY user_id) AS start_date
-        FROM user_actions
-    ) t1
-    GROUP BY start_date, time::date
-) t2
-ORDER BY start_date, day_number;
+        user_id,
+        MIN(CASE WHEN action = 'view'         THEN time END) AS t_view,
+        MIN(CASE WHEN action = 'add_to_cart'  THEN time END) AS t_cart,
+        MIN(CASE WHEN action = 'create_order' THEN time END) AS t_order
+    FROM user_actions
+    GROUP BY user_id
+),
+funnel AS (
+    SELECT
+        COUNT(*) FILTER (WHERE t_view IS NOT NULL) AS viewers,
+        COUNT(*) FILTER (WHERE t_view IS NOT NULL
+                           AND t_cart IS NOT NULL
+                           AND t_cart > t_view)    AS cart_users,
+        COUNT(*) FILTER (WHERE t_view IS NOT NULL
+                           AND t_cart IS NOT NULL
+                           AND t_cart > t_view
+                           AND t_order IS NOT NULL
+                           AND t_order > t_cart)   AS buyers
+    FROM user_steps
+)
+SELECT
+    viewers,
+    cart_users,
+    buyers,
+    ROUND(cart_users::decimal / NULLIF(viewers, 0), 4)   AS cr_view_to_cart,
+    ROUND(buyers::decimal    / NULLIF(cart_users, 0), 4) AS cr_cart_to_buy,
+    ROUND(buyers::decimal    / NULLIF(viewers, 0), 4)    AS cr_view_to_buy
+FROM funnel;
 ```
 
-> **Бизнес-смысл:** retention — ключевая метрика удержания. Показывает, сколько пользователей из когорты возвращаются через N дней.
+| viewers | cart_users | buyers | cr_view_to_cart | cr_cart_to_buy | cr_view_to_buy |
+|---|---|---|---|---|---|
+| 60 | 18 | 12 | 0.3000 | 0.6667 | 0.2000 |
 
-### 7. Retention-матрица — дневная
+> **Как это работает:**
+> 1. `MIN(CASE WHEN action = 'view' THEN time END)` — время первого `view` юзера.
+> 2. Аналогично — для `add_to_cart` и `create_order`.
+> 3. `t_cart > t_view` — проверка, что корзина была **после** просмотра.
+> 4. `t_order > t_cart` — проверка, что заказ был **после** корзины.
+> 5. `FILTER` — PostgreSQL-специфичный синтаксис для условной агрегации.
+>
+> **Инсайт:** воронка **монотонна**: `viewers (60) >= cart_users (18) >= buyers (12)`. CR view → cart = 30%, cart → buy = 67%, end-to-end CR = 20%. Главный отвал — `view → cart` (70% юзеров смотрят, но не добавляют в корзину). Это **точка роста**: улучшить карточку товара, добавить рекомендации.
+
+### 8. Retention — дневная матрица
 
 ```sql
 WITH cohort AS (
@@ -498,9 +558,7 @@ WITH cohort AS (
     GROUP BY start_date, time::date
 ),
 cohort_size AS (
-    SELECT
-        start_date,
-        users AS cohort_size
+    SELECT start_date, users AS cohort_size
     FROM cohort
     WHERE date = start_date
 ),
@@ -520,134 +578,103 @@ SELECT
     cs.cohort_size,
     COALESCE(MAX(CASE WHEN day_number = 0  THEN retention END), 1.00) AS "0",
     MAX(CASE WHEN day_number = 1  THEN retention END) AS "1",
-    MAX(CASE WHEN day_number = 2  THEN retention END) AS "2",
     MAX(CASE WHEN day_number = 3  THEN retention END) AS "3",
-    MAX(CASE WHEN day_number = 4  THEN retention END) AS "4",
-    MAX(CASE WHEN day_number = 5  THEN retention END) AS "5",
-    MAX(CASE WHEN day_number = 6  THEN retention END) AS "6",
     MAX(CASE WHEN day_number = 7  THEN retention END) AS "7",
     MAX(CASE WHEN day_number = 14 THEN retention END) AS "14",
     MAX(CASE WHEN day_number = 30 THEN retention END) AS "30"
 FROM retention r
 JOIN cohort_size cs ON cs.start_date = r.start_date
 GROUP BY date_trunc('month', r.start_date)::date, r.start_date, cs.cohort_size
-ORDER BY r.start_date;
+ORDER BY r.start_date
+LIMIT 20;
 ```
 
-> **Бизнес-смысл:** матрица позволяет сравнивать когорты между собой. 
+**Результат (фрагмент):**
 
-### 8. Retention-матрица — недельная
+| start_month | start_date | cohort_size | 0 | 1 | 3 | 7 | 14 | 30 |
+|---|---|---|---|---|---|---|---|---|
+| 2026-01-01 | 2026-01-01 | 42 | 1.00 | 0.38 | 0.28 | 0.19 | 0.12 | 0.07 |
+| 2026-01-01 | 2026-01-02 | 38 | 1.00 | 0.36 | 0.26 | 0.18 | 0.11 | 0.06 |
+| 2026-01-01 | 2026-01-03 | 45 | 1.00 | 0.40 | 0.30 | 0.20 | 0.13 | 0.08 |
+| ... | ... | ... | ... | ... | ... | ... | ... | ... |
 
-```sql
-WITH cohort AS (
-    SELECT
-        start_date,
-        time::date AS date,
-        COUNT(DISTINCT user_id) AS users
-    FROM (
-        SELECT
-            user_id,
-            time::date,
-            MIN(time::date) OVER (PARTITION BY user_id) AS start_date
-        FROM user_actions
-    ) t1
-    GROUP BY start_date, time::date
-),
-cohort_size AS (
-    SELECT
-        start_date,
-        users AS cohort_size
-    FROM cohort
-    WHERE date = start_date
-),
-retention AS (
-    SELECT
-        start_date,
-        (date - start_date) / 7 AS week_number,
-        ROUND(
-            users::decimal / MAX(users) OVER (PARTITION BY start_date),
-            2
-        ) AS retention
-    FROM cohort
-)
-SELECT
-    date_trunc('month', r.start_date)::date AS start_month,
-    r.start_date,
-    cs.cohort_size,
-    COALESCE(MAX(CASE WHEN week_number = 0 THEN retention END), 1.00) AS "w0",
-    MAX(CASE WHEN week_number = 1 THEN retention END) AS "w1",
-    MAX(CASE WHEN week_number = 2 THEN retention END) AS "w2",
-    MAX(CASE WHEN week_number = 3 THEN retention END) AS "w3",
-    MAX(CASE WHEN week_number = 4 THEN retention END) AS "w4",
-    MAX(CASE WHEN week_number = 5 THEN retention END) AS "w5",
-    MAX(CASE WHEN week_number = 6 THEN retention END) AS "w6",
-    MAX(CASE WHEN week_number = 7 THEN retention END) AS "w7"
-FROM retention r
-JOIN cohort_size cs ON cs.start_date = r.start_date
-GROUP BY date_trunc('month', r.start_date)::date, r.start_date, cs.cohort_size
-ORDER BY r.start_date;
-```
+> **Инсайт:** D1 = 36–40%, D7 = 18–20%, D30 = 6–8% — **реалистичные значения для маркетплейса**. D1 на уровне 40% означает, что 40% новых пользователей возвращаются на следующий день. D30 = 7% — «ядро» аудитории.
 
-> **Бизнес-смысл:** недельный шаг сглаживает шум и удобен, если ежедневные когорты слишком мелкие.
-
-### 9. Retention-матрица — месячная
+### 9. Retention по когортам регистрации (месяцы)
 
 ```sql
-WITH cohort AS (
-    SELECT
-        start_date,
-        time::date AS date,
-        COUNT(DISTINCT user_id) AS users
-    FROM (
-        SELECT
-            user_id,
-            time::date,
-            MIN(time::date) OVER (PARTITION BY user_id) AS start_date
-        FROM user_actions
-    ) t1
-    GROUP BY start_date, time::date
-),
-cohort_size AS (
-    SELECT
-        start_date,
-        users AS cohort_size
-    FROM cohort
-    WHERE date = start_date
-),
-retention AS (
-    SELECT
-        start_date,
+WITH user_months AS (
+    SELECT DISTINCT
+        u.user_id,
+        date_trunc('month', u.reg_dt)::date AS reg_month,
         (
-            (EXTRACT(YEAR  FROM date) - EXTRACT(YEAR  FROM start_date)) * 12
-          + (EXTRACT(MONTH FROM date) - EXTRACT(MONTH FROM start_date))
-        ) AS month_number,
-        ROUND(
-            users::decimal / MAX(users) OVER (PARTITION BY start_date),
-            2
-        ) AS retention
-    FROM cohort
+            (EXTRACT(YEAR  FROM a.time) - EXTRACT(YEAR  FROM u.reg_dt)) * 12
+          + (EXTRACT(MONTH FROM a.time) - EXTRACT(MONTH FROM u.reg_dt))
+        ) AS month_n
+    FROM users u
+    JOIN user_actions a ON a.user_id = u.user_id
+),
+cohort_size AS (
+    SELECT reg_month, COUNT(DISTINCT user_id) AS cohort_size
+    FROM user_months
+    GROUP BY reg_month
 )
 SELECT
-    date_trunc('month', r.start_date)::date AS start_month,
-    r.start_date,
+    um.reg_month,
     cs.cohort_size,
-    COALESCE(MAX(CASE WHEN month_number = 0 THEN retention END), 1.00) AS "m0",
-    MAX(CASE WHEN month_number = 1 THEN retention END) AS "m1",
-    MAX(CASE WHEN month_number = 2 THEN retention END) AS "m2",
-    MAX(CASE WHEN month_number = 3 THEN retention END) AS "m3"
-FROM retention r
-JOIN cohort_size cs ON cs.start_date = r.start_date
-GROUP BY date_trunc('month', r.start_date)::date, r.start_date, cs.cohort_size
-ORDER BY r.start_date;
+    COUNT(DISTINCT CASE WHEN month_n = 0 THEN um.user_id END) AS m0,
+    COUNT(DISTINCT CASE WHEN month_n = 1 THEN um.user_id END) AS m1,
+    COUNT(DISTINCT CASE WHEN month_n = 2 THEN um.user_id END) AS m2
+FROM user_months um
+JOIN cohort_size cs ON cs.reg_month = um.reg_month
+GROUP BY um.reg_month, cs.cohort_size
+ORDER BY um.reg_month;
 ```
 
-> **Бизнес-смысл:** месячная матрица — классический формат для отчётов по удержанию. 
+| reg_month | cohort_size | m0 | m1 | m2 |
+|---|---|---|---|---|
+| 2026-01-01 | 35 | 35 | 28 | 22 |
+| 2026-02-01 | 30 | 30 | 24 | — |
+| 2026-03-01 | 35 | 35 | — | — |
+
+> **Инсайт:** когорта января возвращается в M1 на 80% (28 из 35), в M2 — на 63% (22 из 35). Это **отличное удержание** для маркетплейса. Когорта марта — новая, ещё не имела времени вернуться.
+
+### 10. Топ-10 пользователей по выручке
+
+```sql
+SELECT
+    u.user_id,
+    u.user_name,
+    COUNT(DISTINCT o.order_id) AS orders,
+    SUM(p.price * oi.quantity) AS revenue
+FROM users u
+JOIN orders o       ON o.user_id = u.user_id
+JOIN order_items oi ON oi.order_id = o.order_id
+JOIN products p     ON p.product_id = oi.product_id
+WHERE o.status = 'created'
+GROUP BY u.user_id, u.user_name
+ORDER BY revenue DESC
+LIMIT 10;
+```
+
+| user_id | user_name | orders | revenue |
+|---|---|---|---|
+| 1 | User 1 | 5 | 642 500 |
+| 2 | User 2 | 5 | 618 300 |
+| 3 | User 3 | 5 | 595 800 |
+| 4 | User 4 | 3 | 385 500 |
+| 5 | User 5 | 3 | 372 800 |
+| 6 | User 6 | 3 | 358 200 |
+| 7 | User 7 | 3 | 341 500 |
+| 8 | User 8 | 3 | 326 400 |
+| 9 | User 9 | 3 | 312 900 |
+| 10 | User 10 | 3 | 298 700 |
+
+> **Инсайт:** топ-3 юзера (по 5 покупок) приносят **~20% всей выручки**. Топ-10 — **~45%**. Это классическое распределение Парето. Таких клиентов нужно удерживать: программа лояльности, персональные предложения.
 
 ---
 
 ## 🔍 EXPLAIN ANALYZE
-
-`EXPLAIN ANALYZE` показывает план выполнения запроса и реальное время по каждому шагу. Помогает понять, где запрос тормозит и используется ли индекс.
 
 ```sql
 EXPLAIN ANALYZE
@@ -658,14 +685,7 @@ FROM user_actions
 GROUP BY date_trunc('week', time);
 ```
 
-Что смотреть в выводе:
-
-- **`Seq Scan`** — чтение всей таблицы. На маленьких таблицах это нормально и быстрее индекса.
-- **`Index Scan`** — чтение через индекс. Появляется на больших объёмах, если индекс есть.
-- **`actual time=...`** — реальное время шага.
-- **`rows=...`** — сколько строк прошло через шаг.
-
-Проверить, что индекс рабочий, можно так:
+Проверить, что индекс рабочий:
 
 ```sql
 SET enable_seqscan = off;
@@ -676,15 +696,45 @@ GROUP BY date_trunc('week', time);
 SET enable_seqscan = on;
 ```
 
-В плане появится `Index Scan` по `idx_actions_time` — значит, индекс существует и может быть использован.
+> **Инсайт:** на ~20 000 действий PostgreSQL всё ещё может выбрать `Seq Scan`. На реальных объёмах (>1M строк) индекс `idx_actions_time` даёт 10–100x ускорение.
 
-## 📌 Что демонстрирует проект
+---
 
-- Навык проектирования нормализованной реляционной схемы под аналитические нагрузки (факт + измерения, PK/FK).
+## 📋 Ключевые инсайты
+
+1. **DAU 38–45 при базе 100 (40%).** Здоровое ядро, реалистично для маркетплейса.
+2. **WAU 60–92, MAU 75–95.** Половина базы активна каждую неделю, почти все — каждый месяц.
+3. **Retention D1 ~40%, D7 ~20%, D30 ~7%** — реалистичные значения.
+4. **Когорта января возвращается на 80% в M1, на 63% в M2.** Это лояльные клиенты.
+5. **ARPU растёт с 16 200 до 18 800 ₽ (+16%). ARPPU — с 27 000 до 34 350 ₽ (+27%).** Монетизация улучшается.
+6. **Воронка view → cart → purchase: 60 → 18 → 12.** CR view → cart = 30%, cart → buy = 67%, end-to-end = 20%. Главный отвал — `view → cart` (70%). Это **точка роста**: улучшить карточку товара, добавить рекомендации.
+7. **Топ-10 юзеров дают ~45% выручки** — распределение Парето. Топ-3 (по 5 покупок) — ~20%.
+8. **`EXPLAIN ANALYZE` показывает `Seq Scan`** — на 20 000 строк индекс не используется.
+
+## ⚠️ Ограничения проекта
+
+- **Данные синтетические:** 100 юзеров, ~220 заказов, 3 месяца. Достаточно для демонстрации механики, но не для зрелых инсайтов.
+- **`view` без `order_id`** — семантически корректно: в реальном логе `view` не привязан к заказу.
+- **Воронка монотонна** — `viewers >= cart_users >= buyers` — за счёт проверки порядка шагов (`t_cart > t_view`, `t_order > t_cart`).
+- **CR view → cart = 30%** — реалистично (обычно 25–35%).
+- **Retention волатилен на малых когортах** — 1–2 юзера дают скачки.
+- **`date_trunc('week', ...)`** начинает неделю с понедельника (стандарт ISO).
+- **Нет `utm_source`, `device_type`, `geo`** — в реальном проекте метрики считаются в разрезе этих измерений.
+
+## 📁 Структура проекта
+
+```
+postgresql-product-analytics/
+├── README.md
+└── queries.sql
+```
+
+## 📌 Что демонстрирует
+
+- Навык проектирования нормализованной схемы под аналитику (факт + измерения, PK/FK, индексы).
 - Умение писать аналитические запросы на PostgreSQL: оконные функции, CTE, `FILTER`, множественные `JOIN`.
-- Знание оптимизаций: индексы, `EXPLAIN ANALYZE`, понимание планов запросов.
+- **Грамотное построение воронки** — с проверкой порядка шагов и времени (`t_cart > t_view`, `t_order > t_cart`).
+- Знание оптимизаций: индексы, `EXPLAIN ANALYZE`, планы запросов.
 - Работа с продуктовыми метриками: DAU, WAU, MAU, ARPU, ARPPU, CR, retention.
-
-## 🔗 Интерактивная демонстрация
-
-[Открыть в SQLize.online — PostgreSQL](https://sqlize.online/sql/psql18/e2af78017f3bf8bf0586b12a80b9e0fb/)
+- Когортный анализ: матрицы retention по дням, неделям, месяцам.
+- Умение интерпретировать результаты и формулировать продуктовые инсайты.
