@@ -1,6 +1,6 @@
 # PostgreSQL Product Analytics
 
-Аналитический проект на PostgreSQL: расчёт продуктовых метрик — DAU, WAU, MAU, ARPU, ARPPU, CR, Retention — на нормализованной схеме интернет-магазина.
+Аналитический проект на PostgreSQL: расчёт продуктовых метрик — DAU, WAU, MAU, ARPU, ARPPU, CR, Воронка, Retention — на нормализованной схеме интернет-магазина.
 
 ## 📖 О проекте
 
