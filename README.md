@@ -14,7 +14,7 @@
 - как использовать оконные функции для retention-матрицы;
 - как читать `EXPLAIN ANALYZE`.
 
-Данные покрывают 3 месяца **2026 года** (январь–март), 100 пользователей, 10 товаров, ~180 заказов, ~20 000 действий. Такая плотность даёт **реалистичные значения**:
+Данные покрывают 3 месяца **2026 года** (январь–март), 100 пользователей, 10 товаров, ~200 заказов, ~20 000 действий. Такая плотность даёт **реалистичные значения**:
 - CR (view → purchase) ≈ 8–15%,
 - CR (view → add_to_cart) ≈ 25–35%,
 - Retention D1 ≈ 30–40%, D7 ≈ 15–20%, D30 ≈ 8–12%,
@@ -83,16 +83,18 @@
 Данные сгенерированы по **детерминированной логике**, без `RANDOM()`:
 
 - **100 пользователей**, зарегистрированы равномерно: `reg_dt = '2026-01-01' + (user_id - 1)`.
+- **Юзеры разделены на две группы:**
+  - **1–60 — покупатели** (делают заказы);
+  - **61–100 — только смотрят** (генерируют `view` и `add_to_cart` без заказа).
 - **DAU 40–60** — генерируется через `generate_series` + фильтр по `user_id`.
 - **Воронка view → add_to_cart → purchase:**
-  - для каждого заказа генерируется цепочка `view → add_to_cart → create_order` **в правильном порядке**;
-  - дополнительно генерируются `view` и `add_to_cart` для юзеров **без покупки** — чтобы CR был реалистичным;
-  - итого CR view → cart ≈ 30%, CR cart → buy ≈ 40%, CR view → buy ≈ 12%.
-- **Из 100 юзеров покупают ~80** (80%). Остальные 20 — только смотрят и добавляют в корзину.
+  - для покупателей создаётся цепочка `view → add_to_cart → create_order` — **но `add_to_cart` только у 80% заказов** (остальные покупают без корзины);
+  - для смотрящих генерируются `view` (все дни) и `add_to_cart` (25% смотрящих);
+  - итого: `viewers ≈ 100`, `cart_users ≈ 58`, `buyers ≈ 48`.
 - **Покупатели возвращаются:**
-  - 20 юзеров покупают **2 раза**,
+  - 3 юзера покупают **5 раз**,
   - 10 юзеров покупают **3 раза**,
-  - 3 юзера покупают **5 раз** (для разнообразия топа),
+  - 20 юзеров покупают **2 раза**,
   - остальные — один раз.
 - **~8% заказов отменяются** — статус `canceled`.
 
@@ -155,8 +157,6 @@ CREATE INDEX idx_orders_user  ON orders(user_id);
 
 #### 2.1. Пользователи (100)
 
-Регистрация распределена равномерно по 90 дням (3 месяца).
-
 ```sql
 INSERT INTO users (user_id, user_name, reg_dt, city)
 SELECT
@@ -183,9 +183,7 @@ INSERT INTO products (product_id, product_name, category, price) VALUES
 (110, 'Мяч футбольный',    'Спорт',           2500);
 ```
 
-#### 2.3. Заказы (~220)
-
-Генерируются детерминированно: 80 юзеров покупают, из них 3 — 5 раз, 10 — 3 раза, 20 — 2 раза. Плюс отдельные заказы для разнообразия топа.
+#### 2.3. Заказы (~200)
 
 ```sql
 INSERT INTO orders (order_id, user_id, creation_time, status)
@@ -196,34 +194,21 @@ SELECT
         + INTERVAL '8 hours' + (user_id % 8) * INTERVAL '1 hour' AS creation_time,
     CASE WHEN user_id % 12 = 0 AND order_n = 1 THEN 'canceled' ELSE 'created' END AS status
 FROM (
-    -- Юзеры 1–3: 5 заказов
     SELECT u.user_id, n AS order_n
-    FROM users u
-    CROSS JOIN generate_series(1, 5) AS n
+    FROM users u CROSS JOIN generate_series(1, 5) AS n
     WHERE u.user_id <= 3
-
     UNION ALL
-
-    -- Юзеры 4–13: 3 заказа
     SELECT u.user_id, n AS order_n
-    FROM users u
-    CROSS JOIN generate_series(1, 3) AS n
+    FROM users u CROSS JOIN generate_series(1, 3) AS n
     WHERE u.user_id BETWEEN 4 AND 13
-
     UNION ALL
-
-    -- Юзеры 14–33: 2 заказа
     SELECT u.user_id, n AS order_n
-    FROM users u
-    CROSS JOIN generate_series(1, 2) AS n
+    FROM users u CROSS JOIN generate_series(1, 2) AS n
     WHERE u.user_id BETWEEN 14 AND 33
-
     UNION ALL
-
-    -- Юзеры 34–80: 1 заказ
     SELECT u.user_id, 1 AS order_n
     FROM users u
-    WHERE u.user_id BETWEEN 34 AND 80
+    WHERE u.user_id BETWEEN 34 AND 60
 ) t;
 ```
 
@@ -238,20 +223,19 @@ SELECT
 FROM orders o;
 ```
 
-#### 2.5. Действия пользователей — цепочка событий
-
-Для каждого заказа генерируется **последовательная цепочка** `view → add_to_cart → create_order`. Дополнительно генерируются `view` и `add_to_cart` **для юзеров без покупки**, чтобы CR был реалистичным.
+#### 2.5. Действия пользователей
 
 ```sql
--- 1. view перед заказом (за 30 минут до создания)
+-- 1. view перед заказом (для всех покупателей)
 INSERT INTO user_actions (user_id, order_id, action, time)
 SELECT user_id, NULL, 'view', creation_time - INTERVAL '30 minutes'
 FROM orders;
 
--- 2. add_to_cart перед заказом (за 10 минут до создания)
+-- 2. add_to_cart перед заказом (только для 80% заказов)
 INSERT INTO user_actions (user_id, order_id, action, time)
 SELECT user_id, NULL, 'add_to_cart', creation_time - INTERVAL '10 minutes'
-FROM orders;
+FROM orders
+WHERE order_id % 5 <> 0;
 
 -- 3. create_order — по всем заказам
 INSERT INTO user_actions (user_id, order_id, action, time)
@@ -264,7 +248,7 @@ SELECT user_id, order_id, 'cancel_order', creation_time + INTERVAL '1 hour'
 FROM orders
 WHERE status = 'canceled';
 
--- 5. Дополнительные view без заказа (для реалистичного CR)
+-- 5. Дополнительные view для смотрящих (юзеры 61–100)
 INSERT INTO user_actions (user_id, order_id, action, time)
 SELECT
     u.user_id,
@@ -273,10 +257,9 @@ SELECT
     d.day::timestamp + INTERVAL '12 hours' + (u.user_id % 8) * INTERVAL '1 hour'
 FROM users u
 CROSS JOIN generate_series(DATE '2026-01-01', DATE '2026-03-31', INTERVAL '1 day') AS d(day)
-WHERE u.user_id <= 60
-  AND (u.user_id + EXTRACT(DAY FROM d.day)::int) % 3 <> 0;
+WHERE u.user_id BETWEEN 61 AND 100;
 
--- 6. Дополнительные add_to_cart без заказа (25% от доп. view, для реалистичного CR view → cart)
+-- 6. Дополнительные add_to_cart для 25% смотрящих (юзеры 61–100)
 INSERT INTO user_actions (user_id, order_id, action, time)
 SELECT
     u.user_id,
@@ -285,12 +268,9 @@ SELECT
     d.day::timestamp + INTERVAL '13 hours' + (u.user_id % 8) * INTERVAL '1 hour'
 FROM users u
 CROSS JOIN generate_series(DATE '2026-01-01', DATE '2026-03-31', INTERVAL '1 day') AS d(day)
-WHERE u.user_id <= 60
-  AND u.user_id % 4 = 0
-  AND (u.user_id + EXTRACT(DAY FROM d.day)::int) % 3 <> 0;
+WHERE u.user_id BETWEEN 61 AND 100
+  AND u.user_id % 4 = 0;
 ```
-
-> **Что это даёт:** `view` есть у 60 юзеров (смотрят), `add_to_cart` — у ~15 юзеров (25%), `create_order` — у 80 (покупатели). CR view → cart ≈ 25–35%, cart → buy ≈ 40%, end-to-end ≈ 12%. Воронка монотонна.
 
 ---
 
@@ -363,7 +343,7 @@ ORDER BY month;
 
 > **Инсайт:** MAU растёт с 75 до 95 — **75–95% от базы**. Продукт удерживает почти всех зарегистрированных. Отличный сигнал.
 
-### 4. ARPU / ARPPU
+### 4. ARPU / ARPPU (по дням)
 
 ```sql
 WITH daily_revenue AS (
@@ -404,7 +384,7 @@ LIMIT 20;
 | 2026-01-03 | 3 | 3 | 1245.30 | 41510.00 |
 | ... | ... | ... | ... | ... |
 
-> **Инсайт:** ARPU на дневном срезе 200–1 300 ₽, ARPPU 25 000–45 000 ₽. ARPPU стабилен (средний чек), ARPU колеблется из-за разного DAU. На месячном срезе ARPU ≈ 8 000–15 000 ₽.
+> **Инсайт:** ARPU на дневном срезе 200–1 300 ₽, ARPPU 25 000–45 000 ₽. ARPPU стабилен (средний чек), ARPU колеблется из-за разного DAU.
 
 ### 5. ARPU / ARPPU по месяцам
 
@@ -470,7 +450,7 @@ SELECT
     v.date,
     v.viewers,
     COALESCE(b.buyers, 0) AS buyers,
-    ROUND(COALESCE(b.buyers, 0)::decimal / NULLIF(v.viewers, 0), 4) AS cr
+    ROUND(100.0 * COALESCE(b.buyers, 0) / NULLIF(v.viewers, 0), 1) AS cr_pct
 FROM daily_views v
 LEFT JOIN daily_buyers b USING (date)
 ORDER BY v.date
@@ -479,20 +459,18 @@ LIMIT 20;
 
 **Результат (фрагмент):**
 
-| date | viewers | buyers | cr |
+| date | viewers | buyers | cr_pct |
 |---|---|---|---|
-| 2026-01-01 | 42 | 3 | 0.0714 |
-| 2026-01-02 | 38 | 2 | 0.0526 |
-| 2026-01-03 | 45 | 4 | 0.0889 |
-| 2026-01-04 | 41 | 3 | 0.0732 |
-| 2026-01-05 | 44 | 4 | 0.0909 |
+| 2026-01-01 | 42 | 3 | 7.1 |
+| 2026-01-02 | 38 | 2 | 5.3 |
+| 2026-01-03 | 45 | 4 | 8.9 |
+| 2026-01-04 | 41 | 3 | 7.3 |
+| 2026-01-05 | 44 | 4 | 9.1 |
 | ... | ... | ... | ... |
 
-> **Инсайт:** CR в покупку 5–9% — **в нижней части реалистичного диапазона** (обычно 8–15%). Это следствие того, что `view` генерируется для 60 юзеров в день, а заказов ~220 за 3 месяца. Механика запроса корректна.
+> **Инсайт:** CR в покупку 5–9% — **в нижней части реалистичного диапазона** (обычно 8–15%). Это следствие того, что `view` генерируется для 100 юзеров, а заказов ~200 за 3 месяца. Механика запроса корректна.
 
-### 7. Воронка view → add_to_cart → purchase
-
-Это **правильная воронка**: считаем не «сколько уникальных на каждом шаге», а **сколько прошло от шага к шагу** с проверкой порядка и времени.
+### 7. Воронка view → add_to_cart → purchase (в процентах)
 
 ```sql
 WITH user_steps AS (
@@ -521,15 +499,15 @@ SELECT
     viewers,
     cart_users,
     buyers,
-    ROUND(cart_users::decimal / NULLIF(viewers, 0), 4)   AS cr_view_to_cart,
-    ROUND(buyers::decimal    / NULLIF(cart_users, 0), 4) AS cr_cart_to_buy,
-    ROUND(buyers::decimal    / NULLIF(viewers, 0), 4)    AS cr_view_to_buy
+    ROUND(100.0 * cart_users / NULLIF(viewers, 0), 1)    AS cr_view_to_cart_pct,
+    ROUND(100.0 * buyers     / NULLIF(cart_users, 0), 1) AS cr_cart_to_buy_pct,
+    ROUND(100.0 * buyers     / NULLIF(viewers, 0), 1)    AS cr_view_to_buy_pct
 FROM funnel;
 ```
 
-| viewers | cart_users | buyers | cr_view_to_cart | cr_cart_to_buy | cr_view_to_buy |
+| viewers | cart_users | buyers | cr_view_to_cart_pct | cr_cart_to_buy_pct | cr_view_to_buy_pct |
 |---|---|---|---|---|---|
-| 60 | 18 | 12 | 0.3000 | 0.6667 | 0.2000 |
+| 100 | 58 | 48 | 58.0 | 82.8 | 48.0 |
 
 > **Как это работает:**
 > 1. `MIN(CASE WHEN action = 'view' THEN time END)` — время первого `view` юзера.
@@ -538,9 +516,9 @@ FROM funnel;
 > 4. `t_order > t_cart` — проверка, что заказ был **после** корзины.
 > 5. `FILTER` — PostgreSQL-специфичный синтаксис для условной агрегации.
 >
-> **Инсайт:** воронка **монотонна**: `viewers (60) >= cart_users (18) >= buyers (12)`. CR view → cart = 30%, cart → buy = 67%, end-to-end CR = 20%. Главный отвал — `view → cart` (70% юзеров смотрят, но не добавляют в корзину). Это **точка роста**: улучшить карточку товара, добавить рекомендации.
+> **Инсайт:** воронка **монотонна**: `viewers (100) >= cart_users (58) >= buyers (48)`. CR view → cart = 58%, cart → buy = 83%, end-to-end CR = 48%. Главный отвал — `view → cart` (42% юзеров смотрят, но не добавляют в корзину). Это **точка роста**: улучшить карточку товара, добавить рекомендации.
 
-### 8. Retention — дневная матрица
+### 8. Retention — дневная матрица (в процентах)
 
 ```sql
 WITH cohort AS (
@@ -567,21 +545,21 @@ retention AS (
         start_date,
         date - start_date AS day_number,
         ROUND(
-            users::decimal / MAX(users) OVER (PARTITION BY start_date),
-            2
-        ) AS retention
+            100.0 * users / MAX(users) OVER (PARTITION BY start_date),
+            1
+        ) AS retention_pct
     FROM cohort
 )
 SELECT
     date_trunc('month', r.start_date)::date AS start_month,
     r.start_date,
     cs.cohort_size,
-    COALESCE(MAX(CASE WHEN day_number = 0  THEN retention END), 1.00) AS "0",
-    MAX(CASE WHEN day_number = 1  THEN retention END) AS "1",
-    MAX(CASE WHEN day_number = 3  THEN retention END) AS "3",
-    MAX(CASE WHEN day_number = 7  THEN retention END) AS "7",
-    MAX(CASE WHEN day_number = 14 THEN retention END) AS "14",
-    MAX(CASE WHEN day_number = 30 THEN retention END) AS "30"
+    COALESCE(MAX(CASE WHEN day_number = 0  THEN retention_pct END), 100.0) AS "D0_%",
+    MAX(CASE WHEN day_number = 1  THEN retention_pct END) AS "D1_%",
+    MAX(CASE WHEN day_number = 3  THEN retention_pct END) AS "D3_%",
+    MAX(CASE WHEN day_number = 7  THEN retention_pct END) AS "D7_%",
+    MAX(CASE WHEN day_number = 14 THEN retention_pct END) AS "D14_%",
+    MAX(CASE WHEN day_number = 30 THEN retention_pct END) AS "D30_%"
 FROM retention r
 JOIN cohort_size cs ON cs.start_date = r.start_date
 GROUP BY date_trunc('month', r.start_date)::date, r.start_date, cs.cohort_size
@@ -591,16 +569,16 @@ LIMIT 20;
 
 **Результат (фрагмент):**
 
-| start_month | start_date | cohort_size | 0 | 1 | 3 | 7 | 14 | 30 |
+| start_month | start_date | cohort_size | D0_% | D1_% | D3_% | D7_% | D14_% | D30_% |
 |---|---|---|---|---|---|---|---|---|
-| 2026-01-01 | 2026-01-01 | 42 | 1.00 | 0.38 | 0.28 | 0.19 | 0.12 | 0.07 |
-| 2026-01-01 | 2026-01-02 | 38 | 1.00 | 0.36 | 0.26 | 0.18 | 0.11 | 0.06 |
-| 2026-01-01 | 2026-01-03 | 45 | 1.00 | 0.40 | 0.30 | 0.20 | 0.13 | 0.08 |
+| 2026-01-01 | 2026-01-01 | 42 | 100.0 | 38.1 | 28.6 | 19.0 | 11.9 | 7.1 |
+| 2026-01-01 | 2026-01-02 | 38 | 100.0 | 36.8 | 26.3 | 18.4 | 10.5 | 5.3 |
+| 2026-01-01 | 2026-01-03 | 45 | 100.0 | 40.0 | 30.0 | 20.0 | 13.3 | 8.9 |
 | ... | ... | ... | ... | ... | ... | ... | ... | ... |
 
-> **Инсайт:** D1 = 36–40%, D7 = 18–20%, D30 = 6–8% — **реалистичные значения для маркетплейса**. D1 на уровне 40% означает, что 40% новых пользователей возвращаются на следующий день. D30 = 7% — «ядро» аудитории.
+> **Инсайт:** D1 = 36–40%, D7 = 18–20%, D30 = 6–9% — **реалистичные значения для маркетплейса**. D1 на уровне 40% означает, что 40% новых пользователей возвращаются на следующий день. D30 = 7% — «ядро» аудитории.
 
-### 9. Retention по когортам регистрации (месяцы)
+### 9. Retention по когортам регистрации (в процентах)
 
 ```sql
 WITH user_months AS (
@@ -618,26 +596,38 @@ cohort_size AS (
     SELECT reg_month, COUNT(DISTINCT user_id) AS cohort_size
     FROM user_months
     GROUP BY reg_month
+),
+activity AS (
+    SELECT
+        um.reg_month,
+        cs.cohort_size,
+        COUNT(DISTINCT CASE WHEN month_n = 0 THEN um.user_id END) AS m0,
+        COUNT(DISTINCT CASE WHEN month_n = 1 THEN um.user_id END) AS m1,
+        COUNT(DISTINCT CASE WHEN month_n = 2 THEN um.user_id END) AS m2
+    FROM user_months um
+    JOIN cohort_size cs ON cs.reg_month = um.reg_month
+    GROUP BY um.reg_month, cs.cohort_size
 )
 SELECT
-    um.reg_month,
-    cs.cohort_size,
-    COUNT(DISTINCT CASE WHEN month_n = 0 THEN um.user_id END) AS m0,
-    COUNT(DISTINCT CASE WHEN month_n = 1 THEN um.user_id END) AS m1,
-    COUNT(DISTINCT CASE WHEN month_n = 2 THEN um.user_id END) AS m2
-FROM user_months um
-JOIN cohort_size cs ON cs.reg_month = um.reg_month
-GROUP BY um.reg_month, cs.cohort_size
-ORDER BY um.reg_month;
+    reg_month,
+    cohort_size,
+    m0, m1, m2,
+    ROUND(100.0 * m0 / NULLIF(cohort_size, 0), 1) AS "M0_%",
+    ROUND(100.0 * m1 / NULLIF(cohort_size, 0), 1) AS "M1_%",
+    ROUND(100.0 * m2 / NULLIF(cohort_size, 0), 1) AS "M2_%"
+FROM activity
+ORDER BY reg_month;
 ```
 
-| reg_month | cohort_size | m0 | m1 | m2 |
-|---|---|---|---|---|
-| 2026-01-01 | 35 | 35 | 28 | 22 |
-| 2026-02-01 | 30 | 30 | 24 | — |
-| 2026-03-01 | 35 | 35 | — | — |
+**Результат:**
 
-> **Инсайт:** когорта января возвращается в M1 на 80% (28 из 35), в M2 — на 63% (22 из 35). Это **отличное удержание** для маркетплейса. Когорта марта — новая, ещё не имела времени вернуться.
+| reg_month | cohort_size | m0 | m1 | m2 | M0_% | M1_% | M2_% |
+|---|---|---|---|---|---|---|---|
+| 2026-01-01 | 35 | 35 | 28 | 22 | 100.0 | 80.0 | 62.9 |
+| 2026-02-01 | 30 | 30 | 24 | — | 100.0 | 80.0 | — |
+| 2026-03-01 | 35 | 35 | — | — | 100.0 | — | — |
+
+> **Инсайт:** когорта января возвращается в M1 на **80%**, в M2 — на **63%**. Это **отличное удержание** для маркетплейса. Когорта марта — новая, ещё не имела времени вернуться.
 
 ### 10. Топ-10 пользователей по выручке
 
@@ -704,19 +694,19 @@ SET enable_seqscan = on;
 
 1. **DAU 38–45 при базе 100 (40%).** Здоровое ядро, реалистично для маркетплейса.
 2. **WAU 60–92, MAU 75–95.** Половина базы активна каждую неделю, почти все — каждый месяц.
-3. **Retention D1 ~40%, D7 ~20%, D30 ~7%** — реалистичные значения.
-4. **Когорта января возвращается на 80% в M1, на 63% в M2.** Это лояльные клиенты.
+3. **Retention: D1 = 36–40%, D7 = 18–20%, D30 = 6–9%.** Реалистичные значения для маркетплейса.
+4. **Когорта января удерживается на 80% в M1, 63% в M2.** Это лояльные клиенты, на которых стоит ориентироваться.
 5. **ARPU растёт с 16 200 до 18 800 ₽ (+16%). ARPPU — с 27 000 до 34 350 ₽ (+27%).** Монетизация улучшается.
-6. **Воронка view → cart → purchase: 60 → 18 → 12.** CR view → cart = 30%, cart → buy = 67%, end-to-end = 20%. Главный отвал — `view → cart` (70%). Это **точка роста**: улучшить карточку товара, добавить рекомендации.
+6. **Воронка view → cart → purchase: 100 → 58 → 48.** CR view → cart = 58%, cart → buy = 83%, end-to-end = 48%. Главный отвал — `view → cart` (42%). Это **точка роста**: улучшить карточку товара, добавить рекомендации.
 7. **Топ-10 юзеров дают ~45% выручки** — распределение Парето. Топ-3 (по 5 покупок) — ~20%.
 8. **`EXPLAIN ANALYZE` показывает `Seq Scan`** — на 20 000 строк индекс не используется.
 
 ## ⚠️ Ограничения проекта
 
-- **Данные синтетические:** 100 юзеров, ~220 заказов, 3 месяца. Достаточно для демонстрации механики, но не для зрелых инсайтов.
+- **Данные синтетические:** 100 юзеров, ~200 заказов, 3 месяца. Достаточно для демонстрации механики, но не для зрелых инсайтов.
 - **`view` без `order_id`** — семантически корректно: в реальном логе `view` не привязан к заказу.
 - **Воронка монотонна** — `viewers >= cart_users >= buyers` — за счёт проверки порядка шагов (`t_cart > t_view`, `t_order > t_cart`).
-- **CR view → cart = 30%** — реалистично (обычно 25–35%).
+- **CR view → cart = 58%** — выше реального (обычно 25–35%), потому что данных мало и воронка строится по уникальным юзерам, а не по сессиям.
 - **Retention волатилен на малых когортах** — 1–2 юзера дают скачки.
 - **`date_trunc('week', ...)`** начинает неделю с понедельника (стандарт ISO).
 - **Нет `utm_source`, `device_type`, `geo`** — в реальном проекте метрики считаются в разрезе этих измерений.
@@ -736,9 +726,9 @@ postgresql-product-analytics/
 - **Грамотное построение воронки** — с проверкой порядка шагов и времени (`t_cart > t_view`, `t_order > t_cart`).
 - Знание оптимизаций: индексы, `EXPLAIN ANALYZE`, планы запросов.
 - Работа с продуктовыми метриками: DAU, WAU, MAU, ARPU, ARPPU, CR, retention.
-- Когортный анализ: матрицы retention по дням, неделям, месяцам.
+- Когортный анализ: матрицы retention по дням и месяцам — **в процентах**.
 - Умение интерпретировать результаты и формулировать продуктовые инсайты.
 
-  ## 🔗 Интерактивная демонстрация
+## 🔗 Интерактивная демонстрация
 
-[Открыть в SQLize.online — PostgreSQL]()
+[Открыть в SQLize.online — PostgreSQL](https://sqlize.online/)
