@@ -231,7 +231,7 @@ INSERT INTO user_actions (user_id, order_id, action, time)
 SELECT user_id, NULL, 'view', creation_time - INTERVAL '30 minutes'
 FROM orders;
 
--- 2. add_to_cart перед заказом (для ВСЕХ заказов — корзина обязательна)
+-- 2. add_to_cart перед заказом (для всех заказов)
 INSERT INTO user_actions (user_id, order_id, action, time)
 SELECT user_id, NULL, 'add_to_cart', creation_time - INTERVAL '10 minutes'
 FROM orders;
